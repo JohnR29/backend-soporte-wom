@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 import httpx
 from pydantic import BaseModel, Field
+import logging
 
 from app.api.routes.auth import require_user
 from app.services.huawei_client import get_client, get_huawei_headers
 from app.services.mml_parser import MMLAutoParser
 
 router = APIRouter(tags=["mml"])
+logger = logging.getLogger(__name__)
 
 
 class MmlCommandRequest(BaseModel):
@@ -29,11 +31,13 @@ async def execute_mml_command(
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as error:
+        logger.exception("Huawei MML request returned an HTTP error: %s", error)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Huawei MML request failed",
         ) from error
     except httpx.HTTPError as error:
+        logger.exception("Huawei MML request could not be completed: %s", error)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Huawei MML request could not be completed",
