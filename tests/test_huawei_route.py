@@ -145,3 +145,193 @@ cell-a  ACTIVE
         "retCode": "90000",
         "retMessage": "Execution succeeded.",
     }
+
+
+def test_cell_summary_runs_two_commands_and_joins_by_local_cell_id():
+    dsp_report = """+++ NE-001 2026-08-23 10:20:30
+RETCODE = 0
+---
+Local Cell ID  Cell Name  Cell instance state  Maximum transmit power(0.1dBm)
+
+1  cell-a  ACTIVE  430
+2  cell-b  LOCKED  400
+(Number of results = 2)
+---    END"""
+    lst_report = """+++ NE-001 2026-08-23 10:21:30
+RETCODE = 0
+---
+Local Cell ID  Frequency band  Downlink EARFCN
+
+1  LTE  1800
+(Number of results = 1)
+---    END"""
+    dsp_report_ne2 = dsp_report.replace("NE-001", "NE-002")
+    lst_report_ne2 = lst_report.replace("NE-001", "NE-002").replace(
+        "1  LTE  1800", "1  NR  3500"
+    )
+    responses = iter([
+        {
+            "results": [
+                {"name": "NE-001", "report": dsp_report},
+                {"name": "NE-002", "report": dsp_report_ne2},
+            ]
+        },
+        {
+            "results": [
+                {"name": "NE-001", "report": lst_report},
+                {"name": "NE-002", "report": lst_report_ne2},
+            ]
+        },
+    ])
+    client = FakeHuaweiClient({})
+    client.post.side_effect = lambda *args, **kwargs: httpx.Response(
+        200,
+        json=next(responses),
+        request=httpx.Request("POST", "https://huawei.example"),
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-lte",
+                json={"ne_names": ["NE-001", "NE-002"]},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["records"] == [
+        {
+            "ne_name": "NE-001",
+            "Local Cell ID": "1",
+            "Cell Name": "cell-a",
+            "Cell instance state": "ACTIVE",
+            "Maximum transmit power(0.1dBm)": "430",
+            "Frequency band": "LTE",
+            "Downlink EARFCN": "1800",
+        },
+        {
+            "ne_name": "NE-001",
+            "Local Cell ID": "2",
+            "Cell Name": "cell-b",
+            "Cell instance state": "LOCKED",
+            "Maximum transmit power(0.1dBm)": "400",
+            "Frequency band": None,
+            "Downlink EARFCN": None,
+        },
+        {
+            "ne_name": "NE-002",
+            "Local Cell ID": "1",
+            "Cell Name": "cell-a",
+            "Cell instance state": "ACTIVE",
+            "Maximum transmit power(0.1dBm)": "430",
+            "Frequency band": "NR",
+            "Downlink EARFCN": "3500",
+        },
+        {
+            "ne_name": "NE-002",
+            "Local Cell ID": "2",
+            "Cell Name": "cell-b",
+            "Cell instance state": "LOCKED",
+            "Maximum transmit power(0.1dBm)": "400",
+            "Frequency band": None,
+            "Downlink EARFCN": None,
+        },
+    ]
+    assert [call.kwargs["json"]["command"] for call in client.post.await_args_list] == [
+        "DSP CELL:;",
+        "LST CELL:;",
+    ]
+
+
+def test_nr_cell_summary_joins_three_commands_by_node_and_cell_id():
+    nrcell_report = """+++ NE-001 2026-08-23 10:20:30
+RETCODE = 0
+---
+NR Cell ID  Cell Name  Cell Available State
+
+1  nr-cell-a  Available
+(Number of results = 1)
+---    END"""
+    nrducell_report = """+++ NE-001 2026-08-23 10:21:30
+RETCODE = 0
+---
+Cell ID  Frequency Band  Downlink NARFCN
+
+1  n78  640000
+(Number of results = 1)
+---    END"""
+    nrducelltrp_report = """+++ NE-001 2026-08-23 10:22:30
+RETCODE = 0
+---
+NR DU Cell ID  Max Transmit Power(0.1dBm)
+
+1  320
+(Number of results = 1)
+---    END"""
+    responses = iter([
+        {
+            "results": [
+                {"name": "NE-001", "report": nrcell_report},
+                {"name": "NE-002", "report": nrcell_report.replace("NE-001", "NE-002")},
+            ]
+        },
+        {
+            "results": [
+                {"name": "NE-001", "report": nrducell_report},
+                {"name": "NE-002", "report": nrducell_report.replace("NE-001", "NE-002").replace("640000", "641000")},
+            ]
+        },
+        {
+            "results": [
+                {"name": "NE-001", "report": nrducelltrp_report},
+                {"name": "NE-002", "report": nrducelltrp_report.replace("NE-001", "NE-002").replace("320", "330")},
+            ]
+        },
+    ])
+    client = FakeHuaweiClient({})
+    client.post.side_effect = lambda *args, **kwargs: httpx.Response(
+        200,
+        json=next(responses),
+        request=httpx.Request("POST", "https://huawei.example"),
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-nr",
+                json={"ne_names": ["NE-001", "NE-002"]},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    records = response.json()["records"]
+    assert records[0]["ne_name"] == "NE-001"
+    assert records[0]["NR Cell ID"] == "1"
+    assert records[0]["Frequency Band"] == "n78"
+    assert records[0]["Downlink NARFCN"] == "640000"
+    assert "NR DU Cell ID" not in records[0]
+    assert records[0]["Max Transmit Power(0.1dBm)"] == "320"
+    assert records[1]["ne_name"] == "NE-002"
+    assert records[1]["Downlink NARFCN"] == "641000"
+    assert records[1]["Max Transmit Power(0.1dBm)"] == "330"
+    assert [call.kwargs["json"]["command"] for call in client.post.await_args_list] == [
+        "DSP NRCELL:;",
+        "LST NRDUCELL:;",
+        "LST NRDUCELLTRP:;",
+    ]
