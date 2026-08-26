@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 import logging
 
 from app.api.routes.auth import require_user
-from app.services.huawei_client import get_client, get_huawei_headers
+from app.services.huawei_client import get_client, get_huawei_headers, mark_huawei_activity
 from app.services.mml_parser import MMLAutoParser
 
 router = APIRouter(tags=["mml"])
@@ -31,6 +31,7 @@ async def _execute_mml(command: str, ne_names: list[str]) -> dict:
             json={"command": command, "neNames": ne_names},
         )
         response.raise_for_status()
+        mark_huawei_activity()
     except httpx.HTTPStatusError as error:
         logger.exception("Huawei MML request returned an HTTP error: %s", error)
         raise HTTPException(

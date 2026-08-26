@@ -1,5 +1,6 @@
 from pathlib import Path
 from dataclasses import dataclass
+import asyncio
 import logging
 import time
 
@@ -50,6 +51,10 @@ class _HuaweiSession:
 
 
 _huawei_session: _HuaweiSession | None = None
+_session_lock = asyncio.Lock()
+_last_activity: float | None = None
+_HANDSHAKE_AFTER_SECONDS = 29 * 60
+_KEEPALIVE_CHECK_SECONDS = 60
 
 
 def get_client() -> httpx.AsyncClient:
@@ -62,34 +67,36 @@ def get_client() -> httpx.AsyncClient:
 
 async def get_huawei_headers() -> dict[str, str]:
     """Return headers for the shared Huawei account, logging in when needed."""
-    global _huawei_session
+    global _huawei_session, _last_activity
     settings = get_settings()
 
-    if _huawei_session is None or time.monotonic() >= _huawei_session.expires_at:
-        response = await get_client().put(
-            "/api/rest/securityManagement/v1/oauth/token",
-            json={
-                "grantType": "password",
-                "userName": settings.huawei_username,
-                "value": settings.huawei_password,
-            },
-        )
-        if response.is_error:
-            logger.error("Huawei login failed: HTTP %s, body=%s", response.status_code, response.text)
-        response.raise_for_status()
-        payload = response.json()
-        try:
-            access_session = payload["accessSession"]
-            roa_rand = payload["roaRand"]
-            expires = int(payload["expires"])
-        except (KeyError, TypeError, ValueError) as error:
-            raise RuntimeError("Huawei login returned an invalid response") from error
+    async with _session_lock:
+        if _huawei_session is None or time.monotonic() >= _huawei_session.expires_at:
+            response = await get_client().put(
+                "/api/rest/securityManagement/v1/oauth/token",
+                json={
+                    "grantType": "password",
+                    "userName": settings.huawei_username,
+                    "value": settings.huawei_password,
+                },
+            )
+            if response.is_error:
+                logger.error("Huawei login failed: HTTP %s, body=%s", response.status_code, response.text)
+            response.raise_for_status()
+            payload = response.json()
+            try:
+                access_session = payload["accessSession"]
+                roa_rand = payload["roaRand"]
+                expires = int(payload["expires"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise RuntimeError("Huawei login returned an invalid response") from error
 
-        _huawei_session = _HuaweiSession(
-            access_session=access_session,
-            roa_rand=roa_rand,
-            expires_at=time.monotonic() + max(expires - 30, 1),
-        )
+            _huawei_session = _HuaweiSession(
+                access_session=access_session,
+                roa_rand=roa_rand,
+                expires_at=time.monotonic() + max(expires - 30, 1),
+            )
+            _last_activity = time.monotonic()
 
     return {
         "X-Auth-Token": _huawei_session.access_session,
@@ -97,9 +104,49 @@ async def get_huawei_headers() -> dict[str, str]:
     }
 
 
+def mark_huawei_activity() -> None:
+    global _last_activity
+    _last_activity = time.monotonic()
+
+
+async def keep_huawei_session_alive() -> None:
+    """Renew an active Huawei session after 29 minutes without API activity."""
+    global _huawei_session, _last_activity
+    async with _session_lock:
+        if _huawei_session is None or _last_activity is None:
+            return
+        if time.monotonic() - _last_activity < _HANDSHAKE_AFTER_SECONDS:
+            return
+
+        try:
+            response = await get_client().post(
+                "/api/rest/securityManagement/v1/oauth/handshake",
+                headers={"X-Auth-Token": _huawei_session.access_session},
+                json={},
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 401:
+                _huawei_session = None
+                _last_activity = None
+            logger.warning("Huawei handshake failed: HTTP %s", error.response.status_code)
+        except httpx.HTTPError:
+            logger.warning("Huawei handshake could not be completed", exc_info=True)
+        else:
+            _last_activity = time.monotonic()
+            logger.info("Huawei session renewed by handshake")
+
+
+async def huawei_keepalive_loop() -> None:
+    while True:
+        await asyncio.sleep(_KEEPALIVE_CHECK_SECONDS)
+        await keep_huawei_session_alive()
+
+
 async def close_client() -> None:
-    global _client, _huawei_session
+    global _client, _huawei_session, _last_activity
     _huawei_session = None
+    _last_activity = None
     if _client is not None:
         await _client.aclose()
         _client = None
