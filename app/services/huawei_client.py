@@ -1,10 +1,13 @@
 from pathlib import Path
 from dataclasses import dataclass
+import logging
 import time
 
 import httpx
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def _build_client() -> httpx.AsyncClient:
@@ -14,6 +17,9 @@ def _build_client() -> httpx.AsyncClient:
     client_kwargs: dict = {
         "base_url": settings.huawei_api_base_url,
         "timeout": settings.request_timeout_seconds,
+        # Never let httpx auto-pick up HTTP(S)_PROXY from the OS environment;
+        # proxy usage must only come from USE_PROXY/PROXY_URL in .env.
+        "trust_env": False,
     }
 
     # Proxy is only needed on the Ubuntu VM; local dev leaves USE_PROXY=false.
@@ -22,7 +28,9 @@ def _build_client() -> httpx.AsyncClient:
             raise RuntimeError("USE_PROXY is true but PROXY_URL is not set")
         client_kwargs["proxy"] = settings.proxy_url
 
-    if settings.huawei_ca_cert_path:
+    if not settings.huawei_verify_ssl:
+        client_kwargs["verify"] = False
+    elif settings.huawei_ca_cert_path:
         cert_path = Path(settings.huawei_ca_cert_path)
         if not cert_path.is_file():
             raise RuntimeError(f"HUAWEI_CA_CERT_PATH does not exist: {cert_path}")
@@ -66,6 +74,8 @@ async def get_huawei_headers() -> dict[str, str]:
                 "value": settings.huawei_password,
             },
         )
+        if response.is_error:
+            logger.error("Huawei login failed: HTTP %s, body=%s", response.status_code, response.text)
         response.raise_for_status()
         payload = response.json()
         try:

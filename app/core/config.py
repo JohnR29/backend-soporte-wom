@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     huawei_username: str
     huawei_password: str
     huawei_ca_cert_path: str | None = None
+    # Set to false only for diagnostics (e.g. hitting the API by IP instead of hostname).
+    huawei_verify_ssl: bool = True
 
     request_timeout_seconds: float = 30.0
     # TODO: fixed test token until the real token issuing system is integrated.

@@ -5,3 +5,4 @@ __pycache__/
 .env.production
 certs/*
 .pytest_cache/
+uvicorn.log

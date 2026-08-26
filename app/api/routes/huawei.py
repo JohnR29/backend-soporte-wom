@@ -36,6 +36,12 @@ async def execute_mml_command(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Huawei MML request failed",
         ) from error
+    except httpx.ProxyError as error:
+        logger.exception("Huawei MML request blocked by proxy: %s", error)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Huawei MML request blocked by proxy (check proxy ACL for the Huawei host)",
+        ) from error
     except httpx.HTTPError as error:
         logger.exception("Huawei MML request could not be completed: %s", error)
         raise HTTPException(
