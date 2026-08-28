@@ -38,16 +38,107 @@ This is a temporary, hardcoded-token scheme meant to be replaced by a real token
 
 ## MML commands
 
-Send authenticated MML commands to `POST /mml/command`:
+All MML endpoints require the backend token in the `Authorization` header. The
+list of network elements (`ne_names`) must contain between 1 and 100 names.
+
+### Execute a command
+
+Send an authenticated MML command to `POST /mml/command`:
 
 ```json
 {
 	"command": "display version;",
-	"ne_names": ["NE-001"]
+	"ne_names": ["NE-001", "NE-002"]
 }
 ```
 
-Each Huawei report includes a parsed result with its detected format, metadata, return code, timestamp, and records.
+The backend sends the command to Huawei as one batch. Each Huawei report is
+parsed and includes its return code, timestamp, and records. A failed node is
+kept in `results` instead of being discarded:
+
+```json
+{
+	"name": "NE-OFFLINE",
+	"report": {"error": "Ne is not connected."},
+	"result": "Failed.",
+	"retCode": -1
+}
+```
+
+If Huawei rejects a complete batch because one or more node names do not
+exist, the backend removes those names, retries the remaining batch, and adds
+one failed result per unknown node:
+
+```json
+{
+	"name": "NE-UNKNOWN",
+	"report": {"error": "NE no existe o el nombre está mal escrito."},
+	"result": "Failed.",
+	"retCode": -1
+}
+```
+
+Results are returned in the same order as the requested `ne_names`. A node
+being offline or unknown does not prevent the other nodes from returning data.
+
+### LTE cell summary
+
+`POST /mml/cell-summary-lte` executes `DSP CELL:;` and `LST CELL:;` for the
+requested batch, then joins the results by `ne_name` and `Local Cell ID`.
+
+```json
+{
+	"ne_names": ["NE-001", "NE-OFFLINE", "NE-UNKNOWN"]
+}
+```
+
+The response contains cell data in `records`, the number of cell records in
+`count`, and node-level failures in `errors`:
+
+```json
+{
+	"commands": ["DSP CELL:;", "LST CELL:;"],
+	"records": [
+		{
+			"ne_name": "NE-001",
+			"Local Cell ID": "1",
+			"Cell Name": "cell-a",
+			"Cell instance state": "ACTIVE",
+			"Maximum transmit power(0.1dBm)": "430",
+			"Frequency band": "LTE",
+			"Downlink EARFCN": "1800"
+		}
+	],
+	"count": 1,
+	"errors": [
+		{"ne_name": "NE-OFFLINE", "error": "Ne is not connected."},
+		{"ne_name": "NE-UNKNOWN", "error": "NE no existe o el nombre está mal escrito."}
+	]
+}
+```
+
+### NR cell summary
+
+`POST /mml/cell-summary-nr` executes `DSP NRCELL:;`, `LST NRDUCELL:;`, and
+`LST NRDUCELLTRP:;` for the requested batch. The results are joined by node
+and cell identifier. Its response uses the same `records`, `count`, and
+`errors` structure as the LTE endpoint.
+
+The summary endpoints perform one Huawei request per MML command, not one
+request per node. If Huawei rejects a batch because of an unknown node, that
+command can be retried with the remaining nodes; offline nodes remain part of
+the batch and are reported in `errors`.
+
+### Error handling
+
+- Unknown nodes are reported as `NE no existe o el nombre está mal escrito.`.
+- Offline nodes are reported using Huawei's message, for example
+	`Ne is not connected.`.
+- Summary `records` contains only successfully parsed cell data; node failures
+	are listed in `errors`.
+- Transport, proxy, and unexpected Huawei HTTP failures return `502 Bad Gateway`.
+- Huawei validation failures that are not an unknown-node response return
+	`400 Bad Request` with Huawei's `retMessage`.
 
 ## Deployment (Ubuntu VM)
 

@@ -24,6 +24,7 @@ Batch endpoints (e.g. multi-alarm ack) additionally return per-item failures (e.
 |---|---|
 | 90000 | Operation succeeded |
 | 90001 | Missing parameter |
+| 90018 | Referenced NE(s) do not exist (retMessage lists the offending names) |
 | 90026 / 90052 | Invalid parameter value |
 | 90037 | Status: running (async, keep polling) |
 | 90044 | Invalid marker |
@@ -34,6 +35,7 @@ Batch endpoints (e.g. multi-alarm ack) additionally return per-item failures (e.
 | 94002 | Account locked (5 failed logins — admin-only unlock) |
 | 99030 | Access denied |
 | 99040 | URL not found |
+| 99998 | MML batch execution failed at the envelope level; check per-NE `results[].retCode`/`report` (e.g. `-1` + "Ne is not connected." for an offline NE) |
 
 Full table (90+ codes) is in the original Huawei Developer Guide, Chapter 6 — extend this table here if a new code is encountered in practice.
 
