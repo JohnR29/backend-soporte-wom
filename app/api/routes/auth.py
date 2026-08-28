@@ -4,7 +4,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.services.backend_auth import get_user
 
 
-bearer_scheme = HTTPBearer(auto_error=False)
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    description="Token fijo configurado en BACKEND_STATIC_TOKEN.",
+)
 
 
 async def require_user(

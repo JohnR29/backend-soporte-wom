@@ -19,10 +19,30 @@ async def lifespan(app: FastAPI):
     await close_client()
 
 
-app = FastAPI(title="backend-soporte", lifespan=lifespan)
+app = FastAPI(
+    title="Backend de soporte Huawei",
+    description=(
+        "API intermediaria para ejecutar comandos MML y consultar el estado "
+        "de celdas LTE y NR en nodos de la red Huawei. Todas las operaciones "
+        "de negocio requieren autenticación mediante token Bearer."
+    ),
+    version="1.0.0",
+    openapi_tags=[
+        {
+            "name": "MML",
+            "description": "Ejecución de comandos MML y consultas de celdas por lote de nodos.",
+        }
+    ],
+    lifespan=lifespan,
+)
 app.include_router(huawei_router)
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    summary="Comprobar estado del servicio",
+    description="Indica si el backend está disponible para recibir solicitudes.",
+    response_description="Estado actual del servicio.",
+)
 async def health():
     return {"status": "ok"}

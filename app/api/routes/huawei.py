@@ -9,21 +9,41 @@ from app.api.routes.auth import require_user
 from app.services.huawei_client import get_client, get_huawei_headers, mark_huawei_activity
 from app.services.mml_parser import MMLAutoParser
 
-router = APIRouter(tags=["mml"])
+router = APIRouter(tags=["MML"])
 logger = logging.getLogger(__name__)
 
 
 class MmlCommandRequest(BaseModel):
-    command: str = Field(min_length=1)
-    ne_names: list[str] = Field(min_length=1, max_length=100)
+    command: str = Field(
+        min_length=1,
+        description="Comando MML completo que se ejecutará en cada nodo.",
+        examples=["display version;"],
+    )
+    ne_names: list[str] = Field(
+        min_length=1,
+        max_length=100,
+        description="Nombres de los nodos que recibirán el comando (entre 1 y 100).",
+        examples=[["NE-001", "NE-002"]],
+    )
 
 
 class CellSummaryRequest(BaseModel):
-    ne_names: list[str] = Field(min_length=1, max_length=100)
+    ne_names: list[str] = Field(
+        min_length=1,
+        max_length=100,
+        description="Nombres de los nodos que se consultarán (entre 1 y 100).",
+        examples=[["NE-001", "NE-002"]],
+    )
 
 
 _MML_SUCCESS_RET_CODE = "90000"
 _NE_NOT_EXIST_PATTERN = re.compile(r"is not exist:\s*(.+)$", re.IGNORECASE)
+_MML_RESPONSES = {
+    400: {"description": "Solicitud inválida o nodo inexistente."},
+    401: {"description": "Falta el token o no es válido."},
+    422: {"description": "Los datos enviados no cumplen el formato requerido."},
+    502: {"description": "No fue posible completar la comunicación con Huawei."},
+}
 
 
 class _MissingNeError(Exception):
@@ -186,7 +206,19 @@ async def _execute_mml(command: str, ne_names: list[str]) -> dict:
     return payload
 
 
-@router.post("/mml/command")
+@router.post(
+    "/mml/command",
+    summary="Ejecutar comando MML",
+    description=(
+        "Ejecuta un comando MML en un lote de nodos Huawei. Los nodos "
+        "operativos devuelven su reporte parseado; los nodos desconectados "
+        "o inexistentes se conservan en `results` con su mensaje de error. "
+        "Si Huawei rechaza el lote por un nodo inexistente, se reintenta con "
+        "los nodos restantes."
+    ),
+    response_description="Resultado individual de cada nodo solicitado.",
+    responses=_MML_RESPONSES,
+)
 async def execute_mml_command(
     request: MmlCommandRequest,
     user_id: str = Depends(require_user),
@@ -229,7 +261,17 @@ def _ne_errors(*payloads: dict) -> list[dict]:
     return [{"ne_name": name, "error": error} for name, error in errors.items()]
 
 
-@router.post("/mml/cell-summary-lte")
+@router.post(
+    "/mml/cell-summary-lte",
+    summary="Consultar resumen de celdas LTE",
+    description=(
+        "Ejecuta `DSP CELL:;` y `LST CELL:;` para el lote de nodos indicado. "
+        "Combina los datos por nombre de nodo e identificador de celda. "
+        "Los datos válidos aparecen en `records` y los nodos con errores en `errors`."
+    ),
+    response_description="Resumen de celdas LTE y errores por nodo.",
+    responses=_MML_RESPONSES,
+)
 async def create_cell_summary(
     request: CellSummaryRequest,
     user_id: str = Depends(require_user),
@@ -268,7 +310,18 @@ async def create_cell_summary(
     }
 
 
-@router.post("/mml/cell-summary-nr")
+@router.post(
+    "/mml/cell-summary-nr",
+    summary="Consultar resumen de celdas NR",
+    description=(
+        "Ejecuta `DSP NRCELL:;`, `LST NRDUCELL:;` y `LST NRDUCELLTRP:;` "
+        "para el lote de nodos indicado. Combina los datos por nombre de nodo "
+        "e identificador de celda. Los datos válidos aparecen en `records` y "
+        "los nodos con errores en `errors`."
+    ),
+    response_description="Resumen de celdas NR y errores por nodo.",
+    responses=_MML_RESPONSES,
+)
 async def create_cell_summary_nr(
     request: CellSummaryRequest,
     user_id: str = Depends(require_user),

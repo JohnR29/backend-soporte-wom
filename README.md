@@ -2,7 +2,7 @@
 
 Backend intermediario para consultas a la API de Huawei. Desarrollo en Windows, despliegue en VM Ubuntu (con proxy corporativo).
 
-## Setup
+## Instalacion
 
 ```powershell
 conda create -n backend-soporte python=3.11
@@ -11,39 +11,47 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
-## Run (dev)
+## Ejecucion en desarrollo
 
 ```powershell
 uvicorn app.main:app --reload
 ```
 
-Visit `http://127.0.0.1:8000/health` and `http://127.0.0.1:8000/docs`.
+Visita `http://127.0.0.1:8000/health` para comprobar el estado del servicio y
+`http://127.0.0.1:8000/docs` para consultar la documentacion interactiva.
 
-## Configuration
+## Configuracion
 
-See `.env.example` (local, no proxy) and `.env.production.example` (VM, proxy enabled). Key variables:
+Consulta `.env.example` (entorno local, sin proxy) y
+`.env.production.example` (VM, proxy habilitado). Variables principales:
 
-- `USE_PROXY` / `PROXY_URL` — enable only on the VM.
-- `HUAWEI_CA_CERT_PATH` — path to the CA certificate used to validate the Huawei API's TLS chain.
-- `HUAWEI_API_BASE_URL` — base URL of the Huawei API.
-- `HUAWEI_USERNAME` / `HUAWEI_PASSWORD` — single technical Huawei account, kept only by the backend.
-- `BACKEND_STATIC_TOKEN` — fixed token that clients send on every request.
+- `USE_PROXY` / `PROXY_URL` — habilitar solamente en la VM.
+- `HUAWEI_CA_CERT_PATH` — ruta al certificado CA usado para validar la cadena TLS de la API de Huawei.
+- `HUAWEI_API_BASE_URL` — URL base de la API de Huawei.
+- `HUAWEI_USERNAME` / `HUAWEI_PASSWORD` — cuenta tecnica de Huawei, utilizada solamente por el backend.
+- `BACKEND_STATIC_TOKEN` — token fijo que los clientes envian en cada solicitud.
 
-## Authentication
+## Autenticacion
 
-Send the fixed token configured in `BACKEND_STATIC_TOKEN` as `Authorization: Bearer <token>` on every protected route. The Huawei `accessSession` and `roaRand` values never leave the backend.
+Envia el token fijo configurado en `BACKEND_STATIC_TOKEN` como
+`Authorization: Bearer <token>` en cada ruta protegida. Los valores de sesion
+de Huawei `accessSession` y `roaRand` nunca salen del backend.
 
-This is a temporary, hardcoded-token scheme meant to be replaced by a real token issuing system later. There is no login endpoint: the token is not obtained from the backend, it's a shared secret configured out-of-band.
+Este mecanismo temporal de token fijo sera reemplazado posteriormente por un
+sistema real de emision de tokens. No existe un endpoint de inicio de sesion:
+el token no se obtiene del backend, sino que es un secreto compartido
+configurado fuera de la aplicacion.
 
 
-## MML commands
+## Comandos MML
 
-All MML endpoints require the backend token in the `Authorization` header. The
-list of network elements (`ne_names`) must contain between 1 and 100 names.
+Todos los endpoints MML requieren el token del backend en la cabecera
+`Authorization`. La lista de nodos (`ne_names`) debe contener entre 1 y 100
+nombres.
 
-### Execute a command
+### Ejecutar un comando
 
-Send an authenticated MML command to `POST /mml/command`:
+Envia un comando MML autenticado a `POST /mml/command`:
 
 ```json
 {
@@ -52,9 +60,9 @@ Send an authenticated MML command to `POST /mml/command`:
 }
 ```
 
-The backend sends the command to Huawei as one batch. Each Huawei report is
-parsed and includes its return code, timestamp, and records. A failed node is
-kept in `results` instead of being discarded:
+El backend envia el comando a Huawei como un unico lote. Cada reporte de
+Huawei se procesa e incluye su codigo de retorno, fecha y hora, y registros.
+Un nodo fallido se conserva en `results` en lugar de descartarse:
 
 ```json
 {
@@ -65,9 +73,9 @@ kept in `results` instead of being discarded:
 }
 ```
 
-If Huawei rejects a complete batch because one or more node names do not
-exist, the backend removes those names, retries the remaining batch, and adds
-one failed result per unknown node:
+Si Huawei rechaza el lote completo porque uno o mas nodos no existen, el
+backend elimina esos nombres, reintenta el lote restante y agrega un resultado
+fallido por cada nodo desconocido:
 
 ```json
 {
@@ -78,13 +86,13 @@ one failed result per unknown node:
 }
 ```
 
-Results are returned in the same order as the requested `ne_names`. A node
-being offline or unknown does not prevent the other nodes from returning data.
+Los resultados se devuelven en el mismo orden de `ne_names`. Que un nodo este
+desconectado o no exista no impide que los demas nodos devuelvan sus datos.
 
-### LTE cell summary
+### Resumen de celdas LTE
 
-`POST /mml/cell-summary-lte` executes `DSP CELL:;` and `LST CELL:;` for the
-requested batch, then joins the results by `ne_name` and `Local Cell ID`.
+`POST /mml/cell-summary-lte` ejecuta `DSP CELL:;` y `LST CELL:;` para el lote
+solicitado y combina los resultados usando `ne_name` y `Local Cell ID`.
 
 ```json
 {
@@ -92,8 +100,8 @@ requested batch, then joins the results by `ne_name` and `Local Cell ID`.
 }
 ```
 
-The response contains cell data in `records`, the number of cell records in
-`count`, and node-level failures in `errors`:
+La respuesta contiene los datos de celdas en `records`, la cantidad de
+registros de celdas en `count` y los errores por nodo en `errors`:
 
 ```json
 {
@@ -117,31 +125,32 @@ The response contains cell data in `records`, the number of cell records in
 }
 ```
 
-### NR cell summary
+### Resumen de celdas NR
 
-`POST /mml/cell-summary-nr` executes `DSP NRCELL:;`, `LST NRDUCELL:;`, and
-`LST NRDUCELLTRP:;` for the requested batch. The results are joined by node
-and cell identifier. Its response uses the same `records`, `count`, and
-`errors` structure as the LTE endpoint.
+`POST /mml/cell-summary-nr` ejecuta `DSP NRCELL:;`, `LST NRDUCELL:;` y
+`LST NRDUCELLTRP:;` para el lote solicitado. Los resultados se combinan por
+nodo e identificador de celda. La respuesta utiliza la misma estructura
+`records`, `count` y `errors` del endpoint LTE.
 
-The summary endpoints perform one Huawei request per MML command, not one
-request per node. If Huawei rejects a batch because of an unknown node, that
-command can be retried with the remaining nodes; offline nodes remain part of
-the batch and are reported in `errors`.
+Los endpoints de resumen realizan una solicitud a Huawei por cada comando MML,
+no una solicitud por nodo. Si Huawei rechaza un lote por un nodo desconocido,
+ese comando se reintenta con los nodos restantes; los nodos desconectados
+permanecen en el lote y se informan en `errors`.
 
-### Error handling
+### Manejo de errores
 
-- Unknown nodes are reported as `NE no existe o el nombre está mal escrito.`.
-- Offline nodes are reported using Huawei's message, for example
+- Los nodos desconocidos se informan como `NE no existe o el nombre está mal escrito.`.
+- Los nodos desconectados utilizan el mensaje de Huawei, por ejemplo
 	`Ne is not connected.`.
-- Summary `records` contains only successfully parsed cell data; node failures
-	are listed in `errors`.
-- Transport, proxy, and unexpected Huawei HTTP failures return `502 Bad Gateway`.
-- Huawei validation failures that are not an unknown-node response return
-	`400 Bad Request` with Huawei's `retMessage`.
+- `records` contiene solamente datos de celdas procesados correctamente; los
+	errores por nodo se listan en `errors`.
+- Los errores de transporte, proxy y los errores HTTP inesperados de Huawei
+	devuelven `502 Bad Gateway`.
+- Los errores de validacion de Huawei que no corresponden a un nodo desconocido
+	devuelven `400 Bad Request` junto con el `retMessage` de Huawei.
 
-## Deployment (Ubuntu VM)
+## Despliegue en VM Ubuntu
 
-1. Copy `.env.production.example` to `.env` and fill in real `PROXY_URL` and `HUAWEI_CA_CERT_PATH`.
-2. Place the CA certificate file at the path referenced by `HUAWEI_CA_CERT_PATH`.
-3. Run with `uvicorn app.main:app --host 0.0.0.0 --port 8000` (behind systemd/nginx as needed).
+1. Copia `.env.production.example` a `.env` y completa los valores reales de `PROXY_URL` y `HUAWEI_CA_CERT_PATH`.
+2. Coloca el certificado CA en la ruta indicada por `HUAWEI_CA_CERT_PATH`.
+3. Ejecuta `uvicorn app.main:app --host 0.0.0.0 --port 8000` (detras de systemd/nginx si es necesario).
