@@ -592,3 +592,191 @@ NR DU Cell ID  Max Transmit Power(0.1dBm)
         "LST NRDUCELL:;",
         "LST NRDUCELLTRP:;",
     ]
+
+
+_TEST_RNC_NAMES = ["STG03", "STG04", "STG05", "STG06", "ATF02", "CCP2", "PTM01"]
+
+
+def _umts_fail_result(name: str) -> dict:
+    return {
+        "name": name,
+        "report": "RETCODE = 235308841  NodeB is not configured",
+        "result": "NodeB is not configured",
+        "retCode": 235308841,
+        "serialId": -1,
+    }
+
+
+def test_cell_summary_umts_finds_owning_rnc_and_joins_by_cell_id():
+    dsp_report = """+++ STG03 2026-08-31 10:45:04
+RETCODE = 0
+---
+Cell ID  Cell name  Operation state
+
+501  URM3644_1_B1  Available
+502  URM3644_2_B1  Available
+503  URM3644_3_B1  Available
+(Number of results = 3)
+---    END"""
+    lst_report = """+++ STG03 2026-08-31 10:50:00
+RETCODE = 0
+---
+Cell ID  Max Transmit Power of Cell  Band Indicator  Downlink UARFCN
+
+501  430  BAND1  10787
+502  430  BAND1  10787
+503  430  BAND1  10787
+(Number of results = 3)
+---    END"""
+    dsp_results = [_umts_fail_result(name) for name in ["STG04", "STG05", "STG06", "ATF02", "CCP2", "PTM01"]]
+    dsp_results.insert(0, {"name": "STG03", "report": dsp_report, "result": "Execution succeeded.", "retCode": 0, "serialId": -1})
+    responses = iter([
+        {"results": dsp_results},
+        {"results": [{"name": "STG03", "report": lst_report, "result": "Execution succeeded.", "retCode": 0, "serialId": -1}]},
+    ])
+    client = FakeHuaweiClient({})
+    client.post.side_effect = lambda *args, **kwargs: httpx.Response(
+        200,
+        json=next(responses),
+        request=httpx.Request("POST", "https://huawei.example"),
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            patch("app.api.routes.huawei._umts_rnc_names", return_value=_TEST_RNC_NAMES),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-umts",
+                json={"nodeb_name": "URM3644"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rnc_names_matched"] == ["STG03"]
+    assert body["pattern"] == "URM3644"
+    assert body["count"] == 3
+    assert body["errors"] == [
+        {"ne_name": name, "error": "NodeB is not configured"}
+        for name in ["STG04", "STG05", "STG06", "ATF02", "CCP2", "PTM01"]
+    ]
+    assert body["records"][0] == {
+        "ne_name": "STG03",
+        "Cell ID": "501",
+        "Cell name": "URM3644_1_B1",
+        "Operation state": "Available",
+        "Max Transmit Power of Cell": "430",
+        "Band Indicator": "BAND1",
+        "Downlink UARFCN": "10787",
+    }
+    first_call, second_call = client.post.await_args_list
+    assert first_call.kwargs["json"] == {
+        "command": 'DSP UCELL:DSPT=BYNODEB,NODEBNAME="URM3644";',
+        "neNames": ["STG03", "STG04", "STG05", "STG06", "ATF02", "CCP2", "PTM01"],
+    }
+    assert second_call.kwargs["json"] == {
+        "command": 'LST UCELL:LSTTYPE=ByCellName,CELLNAME="URM3644";',
+        "neNames": ["STG03"],
+    }
+
+
+def test_cell_summary_umts_returns_empty_records_when_no_rnc_matches():
+    dsp_results = [
+        _umts_fail_result(name)
+        for name in ["STG03", "STG04", "STG05", "STG06", "ATF02", "CCP2", "PTM01"]
+    ]
+    client = FakeHuaweiClient({"results": dsp_results})
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            patch("app.api.routes.huawei._umts_rnc_names", return_value=_TEST_RNC_NAMES),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-umts",
+                json={"nodeb_name": "URM9999"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "nodeb_name": "URM9999",
+        "rnc_names_matched": [],
+        "pattern": None,
+        "commands": ['DSP UCELL:DSPT=BYNODEB,NODEBNAME="URM9999";'],
+        "records": [],
+        "count": 0,
+        "errors": [{"ne_name": name, "error": "NodeB is not configured"} for name in [
+            "STG03", "STG04", "STG05", "STG06", "ATF02", "CCP2", "PTM01",
+        ]],
+    }
+    client.post.assert_awaited_once()
+
+
+def test_cell_summary_umts_single_cell_nodeb_uses_first_token_as_pattern():
+    dsp_report = """+++ STG03 2026-08-31 10:45:04
+RETCODE = 0
+---
+Cell ID  Cell name  Operation state
+
+901  URM9999_1_B1  Available
+(Number of results = 1)
+---    END"""
+    lst_report = """+++ STG03 2026-08-31 10:50:00
+RETCODE = 0
+---
+Cell ID  Max Transmit Power of Cell  Band Indicator  Downlink UARFCN
+
+901  430  BAND1  10787
+(Number of results = 1)
+---    END"""
+    dsp_results = [_umts_fail_result(name) for name in ["STG04", "STG05", "STG06", "ATF02", "CCP2", "PTM01"]]
+    dsp_results.insert(0, {"name": "STG03", "report": dsp_report, "result": "Execution succeeded.", "retCode": 0, "serialId": -1})
+    responses = iter([
+        {"results": dsp_results},
+        {"results": [{"name": "STG03", "report": lst_report, "result": "Execution succeeded.", "retCode": 0, "serialId": -1}]},
+    ])
+    client = FakeHuaweiClient({})
+    client.post.side_effect = lambda *args, **kwargs: httpx.Response(
+        200,
+        json=next(responses),
+        request=httpx.Request("POST", "https://huawei.example"),
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            patch("app.api.routes.huawei._umts_rnc_names", return_value=_TEST_RNC_NAMES),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-umts",
+                json={"nodeb_name": "URM9999"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pattern"] == "URM9999"
+    assert body["rnc_names_matched"] == ["STG03"]
+    assert body["count"] == 1
+

@@ -6,6 +6,7 @@ import logging
 import re
 
 from app.api.routes.auth import require_user
+from app.core.config import get_settings
 from app.services.huawei_client import get_client, get_huawei_headers, mark_huawei_activity
 from app.services.mml_parser import MMLAutoParser
 
@@ -33,6 +34,14 @@ class CellSummaryRequest(BaseModel):
         max_length=100,
         description="Nombres de los nodos que se consultarán (entre 1 y 100).",
         examples=[["NE-001", "NE-002"]],
+    )
+
+
+class UmtsCellSummaryRequest(BaseModel):
+    nodeb_name: str = Field(
+        min_length=1,
+        description="Nombre del NodeB a buscar en la lista fija de RNC.",
+        examples=["URM3644"],
     )
 
 
@@ -261,6 +270,57 @@ def _ne_errors(*payloads: dict) -> list[dict]:
     return [{"ne_name": name, "error": error} for name, error in errors.items()]
 
 
+def _umts_rnc_names() -> list[str]:
+    """Fixed RNC list to probe for a NodeB (Huawei has no endpoint to enumerate RNCs)."""
+    return [name.strip() for name in get_settings().umts_rnc_names.split(",") if name.strip()]
+
+
+def _successful_ne_names(payload: dict) -> list[str]:
+    """NE names whose report was parsed successfully (no 'error' key)."""
+    return [
+        result.get("name")
+        for result in payload.get("results", [])
+        if isinstance(result.get("report"), dict) and "error" not in result["report"]
+    ]
+
+
+def _umts_ne_errors(*payloads: dict) -> list[dict]:
+    """Like _ne_errors but surfaces Huawei's plain-text 'result' (e.g. 'NodeB is not configured')."""
+    errors: dict[str, str] = {}
+    for payload in payloads:
+        for result in payload.get("results", []):
+            report = result.get("report")
+            if isinstance(report, dict) and "error" in report:
+                errors.setdefault(result.get("name"), result.get("result", report["error"]))
+    return [{"ne_name": name, "error": error} for name, error in errors.items()]
+
+
+def _common_cell_name_pattern(cell_names: list[str]) -> str:
+    """Longest common leading '_'-separated token run across all Cell name values."""
+    token_lists = [name.split("_") for name in cell_names if name]
+    if not token_lists:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No hay valores de 'Cell name' para derivar el patrón",
+        )
+    distinct_names = {name for name in cell_names if name}
+    if len(distinct_names) == 1:
+        return token_lists[0][0]
+
+    common_tokens: list[str] = []
+    for tokens in zip(*token_lists):
+        if len(set(tokens)) == 1:
+            common_tokens.append(tokens[0])
+        else:
+            break
+    if not common_tokens:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se encontró un patrón común entre los 'Cell name' devueltos",
+        )
+    return "_".join(common_tokens)
+
+
 @router.post(
     "/mml/cell-summary-lte",
     summary="Consultar resumen de celdas LTE",
@@ -383,4 +443,73 @@ async def create_cell_summary_nr(
         "records": summary_dataframe.to_dict(orient="records"),
         "count": len(summary_dataframe),
         "errors": _ne_errors(nrcell_payload, nrducell_payload, nrducelltrp_payload),
+    }
+
+
+@router.post(
+    "/mml/cell-summary-umts",
+    summary="Consultar resumen de celdas UMTS de un NodeB",
+    description=(
+        "Ejecuta `DSP UCELL:DSPT=BYNODEB` contra la lista fija de RNC para "
+        "ubicar el NodeB, deriva el patrón común de sus `Cell name` y ejecuta "
+        "`LST UCELL:LSTTYPE=ByCellName` en la(s) RNC donde fue encontrado. "
+        "Combina ambos resultados por `Cell ID`."
+    ),
+    response_description="Resumen de celdas UMTS del NodeB y errores por RNC.",
+    responses=_MML_RESPONSES,
+)
+async def create_cell_summary_umts(
+    request: UmtsCellSummaryRequest,
+    user_id: str = Depends(require_user),
+):
+    """Ubica un NodeB entre las RNC fijas y extrae el estado/configuración de sus celdas UMTS."""
+    dsp_command = f'DSP UCELL:DSPT=BYNODEB,NODEBNAME="{request.nodeb_name}";'
+    dsp_payload = await _execute_mml(dsp_command, _umts_rnc_names())
+
+    matched_rnc_names = _successful_ne_names(dsp_payload)
+    if not matched_rnc_names:
+        return {
+            "nodeb_name": request.nodeb_name,
+            "rnc_names_matched": [],
+            "pattern": None,
+            "commands": [dsp_command],
+            "records": [],
+            "count": 0,
+            "errors": _umts_ne_errors(dsp_payload),
+        }
+
+    dsp_dataframe = _records_dataframe(dsp_payload, "DSP UCELL", key_column="Cell ID")[[
+        "ne_name",
+        "Cell ID",
+        "Cell name",
+        "Operation state",
+    ]]
+
+    pattern = _common_cell_name_pattern(dsp_dataframe["Cell name"].tolist())
+    lst_command = f'LST UCELL:LSTTYPE=ByCellName,CELLNAME="{pattern}";'
+    lst_payload = await _execute_mml(lst_command, matched_rnc_names)
+    lst_dataframe = _records_dataframe(lst_payload, "LST UCELL", key_column="Cell ID")[[
+        "ne_name",
+        "Cell ID",
+        "Max Transmit Power of Cell",
+        "Band Indicator",
+        "Downlink UARFCN",
+    ]]
+
+    summary_dataframe = dsp_dataframe.merge(
+        lst_dataframe,
+        on=["ne_name", "Cell ID"],
+        how="left",
+        validate="one_to_one",
+    )
+    summary_dataframe = summary_dataframe.astype(object).where(summary_dataframe.notna(), None)
+
+    return {
+        "nodeb_name": request.nodeb_name,
+        "rnc_names_matched": matched_rnc_names,
+        "pattern": pattern,
+        "commands": [dsp_command, lst_command],
+        "records": summary_dataframe.to_dict(orient="records"),
+        "count": len(summary_dataframe),
+        "errors": _umts_ne_errors(dsp_payload, lst_payload),
     }
