@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # TODO: fixed test token until the real token issuing system is integrated.
     backend_static_token: str = "test-token"
 
+    womportal_api_base_url: str = "https://womportal.info/apisystem"
+    womportal_hash: str = ""
+    womportal_id_sistema: int = 63
+
     # Fixed RNC list for UMTS NodeB lookups (no Huawei endpoint enumerates them).
     umts_rnc_names: str = "STG03,STG04,STG05,STG06,ATF02,CCP2,PTM01"
 

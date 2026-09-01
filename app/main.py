@@ -5,7 +5,9 @@ from fastapi import FastAPI
 
 from app.api.routes.alarms import router as alarms_router
 from app.api.routes.huawei import router as huawei_router
+from app.api.routes.tickets import router as tickets_router
 from app.services.huawei_client import close_client, huawei_keepalive_loop
+from app.services.womportal_client import close_client as close_womportal_client
 
 
 @asynccontextmanager
@@ -18,6 +20,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     await close_client()
+    await close_womportal_client()
 
 
 app = FastAPI(
@@ -37,11 +40,16 @@ app = FastAPI(
             "name": "Alarms",
             "description": "Consulta de alarmas activas por sitio.",
         },
+        {
+            "name": "Tickets",
+            "description": "Consulta de tickets de incidencias abiertas por sitio en WOM Portal.",
+        },
     ],
     lifespan=lifespan,
 )
 app.include_router(huawei_router)
 app.include_router(alarms_router)
+app.include_router(tickets_router)
 
 
 @app.get(
