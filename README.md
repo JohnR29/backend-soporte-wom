@@ -149,6 +149,52 @@ permanecen en el lote y se informan en `errors`.
 - Los errores de validacion de Huawei que no corresponden a un nodo desconocido
 	devuelven `400 Bad Request` junto con el `retMessage` de Huawei.
 
+## Alarmas
+
+`GET /alarms/{site_name}` requiere el token del backend en la cabecera
+`Authorization` y consulta las alarmas activas (`dataType=CURRENT`) del sitio
+indicado en `baseObjectInstance`. Acepta los parametros de consulta opcionales
+`limit` (1-1000, por defecto 500) y `marker` (cursor de paginacion; se
+reenvia el `marker` de la respuesta anterior para pedir la siguiente pagina).
+
+```
+GET /alarms/MBTS-OH8315
+GET /alarms/MBTS-OH8315?limit=100&marker=<marker-de-la-respuesta-anterior>
+```
+
+La respuesta contiene una lista simplificada pensada para soporte, con
+severidad/estado traducidos a texto y fechas en hora de Chile continental
+(ISO 8601). `alarmClearedTime` es `null` en alarmas activas (aun no
+limpiadas):
+
+```json
+{
+	"site_name": "MBTS-OH8315",
+	"alarms": [
+		{
+			"alarmId": "29841",
+			"alarmName": "NR Cell Unavailable",
+			"meName": "MBTS-OH8315",
+			"objectInstance": "gNodeB Function Name=NOH8315, NR Cell ID=1, ...",
+			"perceivedSeverity": "Mayor",
+			"alarmRaisedTime": "2026-08-12T12:33:59-04:00",
+			"alarmClearedTime": null,
+			"cleared": "Activa",
+			"ackState": "Reconocida",
+			"comments": "",
+			"additionalInformation": "RAT_INFO=U-L-N, AFFECTED_RAT=N"
+		}
+	],
+	"count": 1,
+	"marker": null
+}
+```
+
+Las traducciones de `perceivedSeverity`, `ackState` y `cleared` siguen la
+convencion estandar Huawei/ITU X.733 y no estan confirmadas contra datos
+reales del MAE; si Huawei devuelve un codigo no mapeado, se conserva el
+codigo original sin traducir.
+
 ## Despliegue en VM Ubuntu
 
 1. Copia `.env.production.example` a `.env` y completa los valores reales de `PROXY_URL` y `HUAWEI_CA_CERT_PATH`.

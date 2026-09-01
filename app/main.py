@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.routes.alarms import router as alarms_router
 from app.api.routes.huawei import router as huawei_router
 from app.services.huawei_client import close_client, huawei_keepalive_loop
 
@@ -31,11 +32,16 @@ app = FastAPI(
         {
             "name": "MML",
             "description": "Ejecución de comandos MML y consultas de celdas por lote de nodos.",
-        }
+        },
+        {
+            "name": "Alarms",
+            "description": "Consulta de alarmas activas por sitio.",
+        },
     ],
     lifespan=lifespan,
 )
 app.include_router(huawei_router)
+app.include_router(alarms_router)
 
 
 @app.get(

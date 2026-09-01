@@ -780,3 +780,221 @@ Cell ID  Max Transmit Power of Cell  Band Indicator  Downlink UARFCN
     assert body["rnc_names_matched"] == ["STG03"]
     assert body["count"] == 1
 
+
+class FakeHuaweiGetClient:
+    def __init__(self, response: httpx.Response):
+        self.get = AsyncMock(return_value=response)
+
+
+def test_get_site_alarms_returns_simplified_and_translated_fields():
+    payload = {
+        "alarmInformationList": [
+            {
+                "alarmId": "29841",
+                "objectInstance": "gNodeB Function Name=NOH8315, NR Cell ID=1",
+                "notificationType": "notifyChangedClearedAlarm",
+                "alarmRaisedTime": "1786552439000",
+                "alarmClearedTime": "1786552739000",
+                "alarmType": "3",
+                "probableCause": "",
+                "perceivedSeverity": "2",
+                "additionalInformation": "RAT_INFO=U-L-N, AFFECTED_RAT=N",
+                "ackTime": "1786552919418",
+                "ackUserId": "< System operator >",
+                "ackState": "1",
+                "clearUserId": "< NE operator >",
+                "cleared": "1",
+                "meName": "MBTS-OH8315",
+                "productName": "BTS3900",
+                "alarmName": "NR Cell Unavailable",
+                "nativeMoName": "gNodeB Function Name=NOH8315, NR Cell ID=1",
+                "csn": "1081088916",
+                "subCsn": "4828",
+                "specialAlarmStatus": "0",
+                "comments": "",
+                "nativeMeDn": "NE=8143",
+                "vflag": "0",
+            }
+        ],
+        "marker": None,
+        "retCode": "90000",
+        "retMessage": "Operation succeeded.",
+    }
+    client = FakeHuaweiGetClient(
+        httpx.Response(200, json=payload, request=httpx.Request("GET", "https://huawei.example"))
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.alarms.get_client", return_value=client),
+            patch(
+                "app.api.routes.alarms.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.get("/alarms/MBTS-OH8315")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["site_name"] == "MBTS-OH8315"
+    assert body["count"] == 1
+    assert body["marker"] is None
+    assert body["alarms"][0] == {
+        "alarmId": "29841",
+        "alarmName": "NR Cell Unavailable",
+        "meName": "MBTS-OH8315",
+        "objectInstance": "gNodeB Function Name=NOH8315, NR Cell ID=1",
+        "perceivedSeverity": "Mayor",
+        "alarmRaisedTime": "2026-08-12T12:33:59-04:00",
+        "alarmClearedTime": "2026-08-12T12:38:59-04:00",
+        "cleared": "Limpia",
+        "ackState": "Reconocida",
+        "comments": "",
+        "additionalInformation": "RAT_INFO=U-L-N, AFFECTED_RAT=N",
+    }
+    client.get.assert_awaited_once_with(
+        "/api/rest/faultSupervisonManagement/v1/alarms",
+        headers={"X-Auth-Token": "test-token"},
+        params={"dataType": "CURRENT", "baseObjectInstance": "MBTS-OH8315", "limit": 500},
+    )
+
+
+def test_get_site_alarms_forwards_marker_and_falls_back_on_unknown_codes():
+    payload = {
+        "alarmInformationList": [
+            {
+                "alarmId": "1",
+                "alarmName": "Unknown Alarm",
+                "meName": "MBTS-OH8315",
+                "objectInstance": "obj",
+                "perceivedSeverity": "9",
+                "alarmRaisedTime": "1786552439000",
+                "alarmClearedTime": None,
+                "cleared": "9",
+                "ackState": "9",
+                "comments": "",
+                "additionalInformation": "",
+            }
+        ],
+        "marker": "next-page-token",
+        "retCode": "90000",
+        "retMessage": "Operation succeeded.",
+    }
+    client = FakeHuaweiGetClient(
+        httpx.Response(200, json=payload, request=httpx.Request("GET", "https://huawei.example"))
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.alarms.get_client", return_value=client),
+            patch(
+                "app.api.routes.alarms.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.get("/alarms/MBTS-OH8315?limit=10&marker=prev-token")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["marker"] == "next-page-token"
+    assert body["alarms"][0]["perceivedSeverity"] == "9"
+    assert body["alarms"][0]["cleared"] == "9"
+    assert body["alarms"][0]["ackState"] == "9"
+    assert body["alarms"][0]["alarmClearedTime"] is None
+    client.get.assert_awaited_once_with(
+        "/api/rest/faultSupervisonManagement/v1/alarms",
+        headers={"X-Auth-Token": "test-token"},
+        params={"dataType": "CURRENT", "baseObjectInstance": "MBTS-OH8315", "limit": 10, "marker": "prev-token"},
+    )
+
+
+def test_get_site_alarms_treats_epoch_zero_cleared_time_as_none_for_active_alarms():
+    payload = {
+        "alarmInformationList": [
+            {
+                "alarmId": "2",
+                "alarmName": "Active Alarm",
+                "meName": "MBTS-OH8315",
+                "objectInstance": "obj",
+                "perceivedSeverity": "1",
+                "alarmRaisedTime": "1786552439000",
+                "alarmClearedTime": "0",
+                "cleared": "0",
+                "ackState": "0",
+                "comments": "",
+                "additionalInformation": "",
+            }
+        ],
+        "marker": None,
+        "retCode": "90000",
+        "retMessage": "Operation succeeded.",
+    }
+    client = FakeHuaweiGetClient(
+        httpx.Response(200, json=payload, request=httpx.Request("GET", "https://huawei.example"))
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.alarms.get_client", return_value=client),
+            patch(
+                "app.api.routes.alarms.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.get("/alarms/MBTS-OH8315")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["alarms"][0]["alarmClearedTime"] is None
+
+
+def test_get_site_alarms_maps_huawei_error_envelope_to_400():
+    error_payload = {"retCode": "90026", "retMessage": "Invalid parameter value."}
+    client = FakeHuaweiGetClient(
+        httpx.Response(400, json=error_payload, request=httpx.Request("GET", "https://huawei.example"))
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.alarms.get_client", return_value=client),
+            patch(
+                "app.api.routes.alarms.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.get("/alarms/MBTS-OH8315")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid parameter value."
+
+
+def test_get_site_alarms_maps_proxy_error_to_502():
+    client = FakeHuaweiGetClient(httpx.Response(200, json={}, request=httpx.Request("GET", "https://huawei.example")))
+    client.get = AsyncMock(side_effect=httpx.ProxyError("blocked"))
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.alarms.get_client", return_value=client),
+            patch(
+                "app.api.routes.alarms.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.get("/alarms/MBTS-OH8315")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+
