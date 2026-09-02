@@ -137,6 +137,49 @@ no una solicitud por nodo. Si Huawei rechaza un lote por un nodo desconocido,
 ese comando se reintenta con los nodos restantes; los nodos desconectados
 permanecen en el lote y se informan en `errors`.
 
+### Consultar KPIs de performance
+
+`POST /mml/kpis` consulta contadores de performance fijos (`ERAB Success
+Rate`, `User Max`, `Traffic`, `Throughput`) para los eNodeB indicados, en la
+ventana de 24 horas mas reciente ya publicada por Huawei. El unico dato que
+se recibe es `ne_names`; el resto de los parametros de la consulta
+(`counterIds`, `period`, `neTypeName`, `timeFormat`) son fijos.
+
+```json
+{
+	"ne_names": ["MBTS-RM3644"]
+}
+```
+
+La ventana de tiempo se calcula automaticamente en UTC (formato requerido
+por Huawei), terminando en la ultima hora completa ya publicada: Huawei
+demora unos 15 minutos en publicar el dato de cada hora, por lo que si aun
+no transcurrieron esos 15 minutos se usa la hora anterior. Si Huawei procesa
+la consulta de forma asincrona (`202 Accepted`), el backend hace polling
+automatico contra Huawei hasta consolidar el resultado completo (paginando
+por `marker`).
+
+La respuesta viene aplanada (una fila por celda y hora) para poder
+convertirla directamente a un DataFrame, y `startTime` se devuelve en hora
+de Chile continental (no UTC), para evitar confusiones con el cambio de dia:
+
+```json
+{
+	"records": [
+		{
+			"startTime": "2026-08-31T21:00:00",
+			"neName": "MBTS-RM3644",
+			"Cell Name": "L4RM3644_1",
+			"Local Cell ID": "0",
+			"ERAB Success Rate": "100",
+			"User Max": "50",
+			"Traffic": "25.2",
+			"Throughput": "10"
+		}
+	]
+}
+```
+
 ### Manejo de errores
 
 - Los nodos desconocidos se informan como `NE no existe o el nombre está mal escrito.`.
