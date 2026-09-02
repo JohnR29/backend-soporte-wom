@@ -1,4 +1,6 @@
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi.testclient import TestClient
@@ -997,4 +999,129 @@ def test_get_site_alarms_maps_proxy_error_to_502():
         app.dependency_overrides.clear()
 
     assert response.status_code == 502
+
+
+class FakeHuaweiPmClient:
+    def __init__(self, post_response: httpx.Response, get_responses: list[httpx.Response] | None = None):
+        self.post = AsyncMock(return_value=post_response)
+        self.get = AsyncMock(side_effect=get_responses or [])
+
+
+def _chile_time(utc_string: str) -> str:
+    """Expected value of _utc_string_to_chile_time for a given UTC 'Z' string."""
+    utc_dt = datetime.strptime(utc_string, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return utc_dt.astimezone(ZoneInfo("America/Santiago")).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def test_get_measurement_kpis_sends_fixed_params_and_flattens_result():
+    result_item = {
+        "startTime": "2026-08-31T03:00:00Z",
+        "neName": "MBTS-RM3644",
+        "objectName": {"Cell Name": "L4RM3644_1", "Local Cell ID": "0"},
+        "counterValues": ["100", "50", "25.2", "10"],
+    }
+    payload = {"result": [result_item], "marker": None, "retCode": "90000"}
+    client = FakeHuaweiPmClient(
+        httpx.Response(200, json=payload, request=httpx.Request("POST", "https://huawei.example"))
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post("/mml/kpis", json={"ne_names": ["MBTS-RM3644"]})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "records": [
+            {
+                "startTime": _chile_time("2026-08-31T03:00:00Z"),
+                "neName": "MBTS-RM3644",
+                "Cell Name": "L4RM3644_1",
+                "Local Cell ID": "0",
+                "ERAB Success Rate": "100",
+                "User Max": "50",
+                "Traffic": "25.2",
+                "Throughput": "10",
+            }
+        ]
+    }
+
+    client.post.assert_awaited_once()
+    _, kwargs = client.post.call_args
+    body = kwargs["json"]
+    assert body["timeFormat"] == "utcTimeString"
+    assert body["period"] == 60
+    assert body["counterIds"] == [1543503856, 1543503857, 1543503836, 1543503845]
+    assert body["isQueryAllNe"] == 0
+    assert body["neTypeName"] == "eNodeB"
+    assert body["neNames"] == ["MBTS-RM3644"]
+
+    start = datetime.strptime(body["startTime"], "%Y-%m-%dT%H:%M:%SZ")
+    end = datetime.strptime(body["endTime"], "%Y-%m-%dT%H:%M:%SZ")
+    assert end - start == timedelta(hours=24)
+    assert start.minute == 0 and start.second == 0
+    assert end.minute == 0 and end.second == 0
+
+
+def test_get_measurement_kpis_polls_async_task_and_flattens_merged_result():
+    accepted_payload = {"retCode": "90037", "taskId": "1"}
+    running_payload = {"retCode": "90037"}
+    result_item = {
+        "startTime": "2026-08-31T04:00:00Z",
+        "neName": "MBTS-RM3644",
+        "objectName": {"Cell Name": "L4RM3644_2", "Local Cell ID": "1"},
+        "counterValues": ["99.8", "38", "41.43", "8.4"],
+    }
+    final_payload = {"result": [result_item], "marker": None, "retCode": "90000"}
+    client = FakeHuaweiPmClient(
+        httpx.Response(202, json=accepted_payload, request=httpx.Request("POST", "https://huawei.example")),
+        [
+            httpx.Response(200, json=running_payload, request=httpx.Request("GET", "https://huawei.example")),
+            httpx.Response(200, json=final_payload, request=httpx.Request("GET", "https://huawei.example")),
+        ],
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            patch("app.api.routes.huawei.asyncio_sleep", new=AsyncMock()),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post("/mml/kpis", json={"ne_names": ["MBTS-RM3644"]})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "records": [
+            {
+                "startTime": _chile_time("2026-08-31T04:00:00Z"),
+                "neName": "MBTS-RM3644",
+                "Cell Name": "L4RM3644_2",
+                "Local Cell ID": "1",
+                "ERAB Success Rate": "99.8",
+                "User Max": "38",
+                "Traffic": "41.43",
+                "Throughput": "8.4",
+            }
+        ]
+    }
+    assert client.get.await_count == 2
+    client.get.assert_awaited_with(
+        "/api/rest/performanceManagement/v2/measurementResults/1",
+        headers={"X-Auth-Token": "test-token"},
+        params={"limit": 1000},
+    )
 

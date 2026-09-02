@@ -2,8 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 import httpx
 import pandas as pd
 from pydantic import BaseModel, Field
+from asyncio import sleep as asyncio_sleep
 import logging
 import re
+import time
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from app.api.routes.auth import require_user
 from app.core.config import get_settings
@@ -42,6 +46,15 @@ class UmtsCellSummaryRequest(BaseModel):
         min_length=1,
         description="Nombre del NodeB a buscar en la lista fija de RNC.",
         examples=["URM3644"],
+    )
+
+
+class MeasurementResultsRequest(BaseModel):
+    ne_names: list[str] = Field(
+        min_length=1,
+        max_length=100,
+        description="Nombres de los eNodeB a consultar (entre 1 y 100).",
+        examples=[["MBTS-RM3644"]],
     )
 
 
@@ -213,6 +226,210 @@ async def _execute_mml(command: str, ne_names: list[str]) -> dict:
             }
 
     return payload
+
+
+# Fixed performance-query parameters (see .github/skills/huawei-api/references/endpoints.md).
+_PM_TIME_FORMAT = "utcTimeString"
+_PM_PERIOD_MINUTES = 60
+_PM_COUNTER_IDS = [1543503856, 1543503857, 1543503836, 1543503845]
+# KPI name for each id above, same order (translated from Huawei's counter catalog).
+_PM_COUNTER_NAMES = ["ERAB Success Rate", "User Max", "Traffic", "Throughput"]
+_PM_NE_TYPE_NAME = "eNodeB"
+_PM_RUNNING_RET_CODE = "90037"
+_PM_AVAILABILITY_LAG_MINUTES = 15  # Huawei publishes an hourly bucket ~15 min after it closes.
+_PM_POLL_INTERVAL_SECONDS = 3
+_PM_POLL_TIMEOUT_SECONDS = 120
+_PM_RESULT_LIMIT = 1000
+_CHILE_TZ = ZoneInfo("America/Santiago")
+
+
+def _last_24h_window() -> tuple[str, str]:
+    """Last 24h ending at the latest hourly bucket Huawei has already published."""
+    now = datetime.now(timezone.utc)
+    hour_floor = now.replace(minute=0, second=0, microsecond=0)
+    if now >= hour_floor + timedelta(minutes=_PM_AVAILABILITY_LAG_MINUTES):
+        end_time = hour_floor
+    else:
+        end_time = hour_floor - timedelta(hours=1)
+    start_time = end_time - timedelta(hours=24)
+    time_format = "%Y-%m-%dT%H:%M:%SZ"
+    return start_time.strftime(time_format), end_time.strftime(time_format)
+
+
+def _utc_string_to_chile_time(value: str | None) -> str | None:
+    """Huawei reports startTime in UTC; display it in Chile local time to avoid confusion."""
+    if not value:
+        return value
+    try:
+        utc_dt = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return value
+    return utc_dt.astimezone(_CHILE_TZ).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _raise_for_huawei_error(error: httpx.HTTPStatusError, action: str) -> None:
+    try:
+        error_payload = error.response.json()
+    except ValueError:
+        error_payload = None
+    if isinstance(error_payload, dict) and error_payload.get("retMessage"):
+        logger.error(
+            "Huawei %s request rejected: HTTP %s retCode=%s retMessage=%s",
+            action,
+            error.response.status_code,
+            error_payload.get("retCode"),
+            error_payload.get("retMessage"),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error_payload["retMessage"],
+        ) from error
+    logger.exception("Huawei %s request returned an HTTP error: %s", action, error)
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=f"Huawei {action} request failed",
+    ) from error
+
+
+async def _poll_measurement_results(task_id: str) -> list[dict]:
+    """Fetch every page of an async measurement task, retrying while it's still running."""
+    client = get_client()
+    deadline = time.monotonic() + _PM_POLL_TIMEOUT_SECONDS
+    merged_results: list = []
+    marker: str | None = None
+
+    while True:
+        params: dict = {"limit": _PM_RESULT_LIMIT}
+        if marker:
+            params["marker"] = marker
+        try:
+            response = await client.get(
+                f"/api/rest/performanceManagement/v2/measurementResults/{task_id}",
+                headers=await get_huawei_headers(),
+                params=params,
+            )
+            response.raise_for_status()
+            mark_huawei_activity()
+        except httpx.HTTPStatusError as error:
+            _raise_for_huawei_error(error, "performance query fetch")
+        except httpx.ProxyError as error:
+            logger.exception("Huawei performance query fetch blocked by proxy: %s", error)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Huawei performance query blocked by proxy (check proxy ACL for the Huawei host)",
+            ) from error
+        except httpx.HTTPError as error:
+            logger.exception("Huawei performance query fetch could not be completed: %s", error)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Huawei performance query fetch could not be completed",
+            ) from error
+
+        payload = response.json()
+
+        if str(payload.get("retCode")) == _PM_RUNNING_RET_CODE:
+            if time.monotonic() >= deadline:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Huawei performance query timed out while processing",
+                )
+            await asyncio_sleep(_PM_POLL_INTERVAL_SECONDS)
+            continue
+
+        merged_results.extend(payload.get("result", []))
+        marker = payload.get("marker")
+        if not marker or marker == "null":
+            break
+        if time.monotonic() >= deadline:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Huawei performance query timed out while paginating",
+            )
+
+    return merged_results
+
+
+def _flatten_measurement_results(result_items: list[dict]) -> dict:
+    """Turn Huawei's counterValues/objectName shape into flat, dataframe-ready records."""
+    records = []
+    for item in result_items:
+        object_name = item.get("objectName") or {}
+        counter_values = item.get("counterValues") or []
+        record = {
+            "startTime": _utc_string_to_chile_time(item.get("startTime")),
+            "neName": item.get("neName"),
+            "Cell Name": object_name.get("Cell Name"),
+            "Local Cell ID": object_name.get("Local Cell ID"),
+        }
+        record.update(zip(_PM_COUNTER_NAMES, counter_values))
+        records.append(record)
+    return {"records": records}
+
+
+async def _create_measurement_task(ne_names: list[str]) -> dict:
+    """Create a Huawei performance query for the last available 24h and return its results."""
+    start_time, end_time = _last_24h_window()
+    client = get_client()
+    body = {
+        "timeFormat": _PM_TIME_FORMAT,
+        "startTime": start_time,
+        "endTime": end_time,
+        "period": _PM_PERIOD_MINUTES,
+        "counterIds": _PM_COUNTER_IDS,
+        "isQueryAllNe": 0,
+        "neTypeName": _PM_NE_TYPE_NAME,
+        "neNames": ne_names,
+    }
+    try:
+        response = await client.post(
+            "/api/rest/performanceManagement/v2/measurementResults",
+            headers=await get_huawei_headers(),
+            json=body,
+        )
+        response.raise_for_status()
+        mark_huawei_activity()
+    except httpx.HTTPStatusError as error:
+        _raise_for_huawei_error(error, "performance query")
+    except httpx.ProxyError as error:
+        logger.exception("Huawei performance query blocked by proxy: %s", error)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Huawei performance query blocked by proxy (check proxy ACL for the Huawei host)",
+        ) from error
+    except httpx.HTTPError as error:
+        logger.exception("Huawei performance query could not be completed: %s", error)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Huawei performance query could not be completed",
+        ) from error
+
+    payload = response.json()
+    if response.status_code == status.HTTP_202_ACCEPTED or str(payload.get("retCode")) == _PM_RUNNING_RET_CODE:
+        result_items = await _poll_measurement_results(payload["taskId"])
+    else:
+        result_items = payload.get("result", [])
+    return _flatten_measurement_results(result_items)
+
+
+@router.post(
+    "/mml/kpis",
+    summary="Consultar KPIs de performance (últimas 24h)",
+    description=(
+        "Consulta contadores de performance fijos para los eNodeB indicados, "
+        "en la ventana de 24h más reciente ya publicada por Huawei (hay un "
+        "desfase de ~15 min por hora). Si Huawei procesa la consulta de forma "
+        "asíncrona, se hace polling automático hasta consolidar el resultado. "
+        "La respuesta viene aplanada (una fila por celda/hora) para poder "
+        "convertirla directamente a un DataFrame."
+    ),
+    response_description="Registros aplanados con un KPI por columna (records[]).",
+    responses=_MML_RESPONSES,
+)
+async def get_measurement_kpis(
+    request: MeasurementResultsRequest,
+    user_id: str = Depends(require_user),
+) -> dict:
+    return await _create_measurement_task(request.ne_names)
 
 
 @router.post(
