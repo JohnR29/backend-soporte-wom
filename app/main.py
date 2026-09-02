@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Backend de soporte Huawei",
+    title="Backend Soporte WOM",
     description=(
         "API intermediaria para ejecutar comandos MML y consultar el estado "
         "de celdas LTE y NR en nodos de la red Huawei. Todas las operaciones "
