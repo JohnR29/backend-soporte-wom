@@ -1,5 +1,6 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 import httpx
@@ -31,6 +32,10 @@ _ALARM_RESPONSES = {
     502: {"description": "No fue posible completar la comunicación con Huawei."},
 }
 
+# Lista fija de alarmId monitoreadas por el caso de uso "Hermes".
+_HERMES_ALARM_IDS = ["13882", "22214", "22224", "301", "40012"]
+_HERMES_FILTER = json.dumps([{"field": "alarmId", "operator": "IN", "values": _HERMES_ALARM_IDS}])
+
 
 def _epoch_ms_to_iso(value: str | None) -> str | None:
     if not value:
@@ -61,13 +66,21 @@ def _simplify_alarm(raw: dict) -> dict:
     }
 
 
-async def _get_current_alarms(site_name: str, limit: int, marker: str | None) -> dict:
-    """Query current (active) alarms for a site from Huawei's alarms endpoint."""
-    client = get_client()
-    params: dict = {"dataType": "CURRENT", "baseObjectInstance": site_name, "limit": limit}
-    if marker:
-        params["marker"] = marker
+def _simplify_hermes_alarm(raw: dict) -> dict:
+    return {
+        "Alarm ID": raw.get("alarmId"),
+        "Alarm name": raw.get("alarmName"),
+        "Comment": raw.get("comments"),
+        "MO Name": raw.get("nativeMoName"),
+        "Occurred On (NT)": _epoch_ms_to_iso(raw.get("alarmRaisedTime")),
+        "Cleared On (NT)": _epoch_ms_to_iso(raw.get("alarmClearedTime")),
+        "Log Serial Number": raw.get("csn"),
+    }
 
+
+async def _request_alarms(params: dict) -> dict:
+    """Query Huawei's alarms endpoint with the given query params."""
+    client = get_client()
     try:
         response = await client.get(
             "/api/rest/faultSupervisonManagement/v1/alarms",
@@ -111,6 +124,55 @@ async def _get_current_alarms(site_name: str, limit: int, marker: str | None) ->
         ) from error
 
     return response.json()
+
+
+async def _get_current_alarms(site_name: str, limit: int, marker: str | None) -> dict:
+    """Query current (active) alarms for a site from Huawei's alarms endpoint."""
+    params: dict = {"dataType": "CURRENT", "baseObjectInstance": site_name, "limit": limit}
+    if marker:
+        params["marker"] = marker
+    return await _request_alarms(params)
+
+
+async def _get_hermes_alarms(limit: int, marker: str | None) -> dict:
+    """Query active alarms across the whole network, filtered to the Hermes alarmId list."""
+    params: dict = {
+        "dataType": "CURRENT",
+        "alarmAckState": "ALL_ACTIVE_ALARMS",
+        "filter": _HERMES_FILTER,
+        "limit": limit,
+    }
+    if marker:
+        params["marker"] = marker
+    return await _request_alarms(params)
+
+
+@router.get(
+    "/alarms/hermes",
+    summary="Consultar alarmas activas del caso Hermes (lista fija de alarmId)",
+    description=(
+        "Consulta las alarmas actuales (`dataType=CURRENT`, `alarmAckState=ALL_ACTIVE_ALARMS`) "
+        "en toda la red, filtradas por una lista fija de `alarmId` "
+        f"({', '.join(_HERMES_ALARM_IDS)}), y devuelve un JSON aplanado listo para "
+        "convertir a DataFrame."
+    ),
+    response_description="Alarmas Hermes activas, con marker para paginar si aplica.",
+    responses=_ALARM_RESPONSES,
+)
+async def get_hermes_alarms(
+    limit: int = Query(500, ge=1, le=1000),
+    marker: str | None = Query(None),
+    user_id: str = Depends(require_user),
+):
+    """Consulta alarmas CURRENT filtradas por la lista fija de alarmId de Hermes."""
+    payload = await _get_hermes_alarms(limit, marker)
+    alarms = [_simplify_hermes_alarm(raw) for raw in payload.get("alarmInformationList", [])]
+
+    return {
+        "alarms": alarms,
+        "count": len(alarms),
+        "marker": payload.get("marker"),
+    }
 
 
 @router.get(
