@@ -35,6 +35,8 @@ _ALARM_RESPONSES = {
 # Lista fija de alarmId monitoreadas por el caso de uso "Hermes".
 _HERMES_ALARM_IDS = ["13882", "22214", "22224", "301", "40012"]
 _HERMES_FILTER = json.dumps([{"field": "alarmId", "operator": "IN", "values": _HERMES_ALARM_IDS}])
+_LICENSE_TRIAL_ALARM_IDS = ["26817"]
+_LICENSE_TRIAL_FILTER = json.dumps([{"field": "alarmId", "operator": "IN", "values": _LICENSE_TRIAL_ALARM_IDS}])
 
 
 def _epoch_ms_to_iso(value: str | None) -> str | None:
@@ -72,6 +74,19 @@ def _simplify_hermes_alarm(raw: dict) -> dict:
         "Alarm name": raw.get("alarmName"),
         "Comment": raw.get("comments"),
         "MO Name": raw.get("nativeMoName"),
+        "Occurred On (NT)": _epoch_ms_to_iso(raw.get("alarmRaisedTime")),
+        "Cleared On (NT)": _epoch_ms_to_iso(raw.get("alarmClearedTime")),
+        "Log Serial Number": raw.get("csn"),
+    }
+
+
+def _simplify_license_trial_alarm(raw: dict) -> dict:
+    return {
+        "Alarm ID": raw.get("alarmId"),
+        "Alarm name": raw.get("alarmName"),
+        "Comment": raw.get("comments"),
+        "MO Name": raw.get("nativeMoName"),
+        "Location Information": raw.get("objectInstance"),
         "Occurred On (NT)": _epoch_ms_to_iso(raw.get("alarmRaisedTime")),
         "Cleared On (NT)": _epoch_ms_to_iso(raw.get("alarmClearedTime")),
         "Log Serial Number": raw.get("csn"),
@@ -147,6 +162,19 @@ async def _get_hermes_alarms(limit: int, marker: str | None) -> dict:
     return await _request_alarms(params)
 
 
+async def _get_license_trial_alarms(limit: int, marker: str | None) -> dict:
+    """Query active alarms across the whole network, filtered to the license trial alarmId."""
+    params: dict = {
+        "dataType": "CURRENT",
+        #"alarmAckState": "ALL_ACTIVE_ALARMS",
+        "filter": _LICENSE_TRIAL_FILTER,
+        "limit": limit,
+    }
+    if marker:
+        params["marker"] = marker
+    return await _request_alarms(params)
+
+
 @router.get(
     "/alarms/hermes",
     summary="Consultar alarmas activas del caso Hermes (lista fija de alarmId)",
@@ -167,6 +195,33 @@ async def get_hermes_alarms(
     """Consulta alarmas CURRENT filtradas por la lista fija de alarmId de Hermes."""
     payload = await _get_hermes_alarms(limit, marker)
     alarms = [_simplify_hermes_alarm(raw) for raw in payload.get("alarmInformationList", [])]
+
+    return {
+        "alarms": alarms,
+        "count": len(alarms),
+        "marker": payload.get("marker"),
+    }
+
+
+@router.get(
+    "/alarms/license-trial",
+    summary="Consultar alarmas activas del caso License Trial",
+    description=(
+        "Consulta las alarmas actuales (`dataType=CURRENT`"
+        "en toda la red, filtradas por el `alarmId` 26817, y devuelve un JSON aplanado "
+        "listo para convertir a DataFrame."
+    ),
+    response_description="Alarmas License Trial activas, con marker para paginar si aplica.",
+    responses=_ALARM_RESPONSES,
+)
+async def get_license_trial_alarms(
+    limit: int = Query(500, ge=1, le=1000),
+    marker: str | None = Query(None),
+    user_id: str = Depends(require_user),
+):
+    """Consulta alarmas CURRENT filtradas por el alarmId de License Trial."""
+    payload = await _get_license_trial_alarms(limit, marker)
+    alarms = [_simplify_license_trial_alarm(raw) for raw in payload.get("alarmInformationList", [])]
 
     return {
         "alarms": alarms,

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 from fastapi.testclient import TestClient
 
-from app.api.routes.alarms import _HERMES_FILTER, _epoch_ms_to_iso
+from app.api.routes.alarms import _HERMES_FILTER, _LICENSE_TRIAL_FILTER, _epoch_ms_to_iso
 from app.api.routes.auth import require_user
 from app.main import app
 
@@ -20,6 +20,14 @@ class FakeHuaweiClient:
 
 
 def _call_hermes_endpoint(client):
+    return _call_alarms_endpoint("/alarms/hermes", client)
+
+
+def _call_license_trial_endpoint(client, params=None):
+    return _call_alarms_endpoint("/alarms/license-trial", client, params)
+
+
+def _call_alarms_endpoint(path, client, params=None):
     app.dependency_overrides[require_user] = lambda: "operator-1"
     try:
         with (
@@ -30,7 +38,7 @@ def _call_hermes_endpoint(client):
             ),
             TestClient(app) as test_client,
         ):
-            return test_client.get("/alarms/hermes")
+            return test_client.get(path, params=params)
     finally:
         app.dependency_overrides.clear()
 
@@ -84,6 +92,62 @@ def test_hermes_alarms_sends_expected_query_params():
             "alarmAckState": "ALL_ACTIVE_ALARMS",
             "filter": _HERMES_FILTER,
             "limit": 500,
+        },
+    )
+
+
+def test_license_trial_alarms_maps_fields_and_renames_columns():
+    client = FakeHuaweiClient(
+        {
+            "alarmInformationList": [
+                {
+                    "alarmId": "26817",
+                    "alarmName": "License Trial Expiration",
+                    "comments": "Licencia por expirar",
+                    "nativeMoName": "NodeB-001",
+                    "objectInstance": "Sector 3",
+                    "alarmRaisedTime": "1735689600000",
+                    "alarmClearedTime": "0",
+                    "csn": "998877",
+                }
+            ],
+            "marker": "next-page",
+        }
+    )
+
+    response = _call_license_trial_endpoint(client)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 1
+    assert body["marker"] == "next-page"
+    assert body["alarms"][0] == {
+        "Alarm ID": "26817",
+        "Alarm name": "License Trial Expiration",
+        "Comment": "Licencia por expirar",
+        "MO Name": "NodeB-001",
+        "Location Information": "Sector 3",
+        "Occurred On (NT)": _epoch_ms_to_iso("1735689600000"),
+        "Cleared On (NT)": None,
+        "Log Serial Number": "998877",
+    }
+
+
+def test_license_trial_alarms_sends_expected_query_params():
+    client = FakeHuaweiClient({"alarmInformationList": [], "marker": "null"})
+
+    response = _call_license_trial_endpoint(client, {"limit": 10, "marker": "page-1"})
+
+    assert response.status_code == 200
+    client.get.assert_awaited_once_with(
+        "/api/rest/faultSupervisonManagement/v1/alarms",
+        headers={"X-Auth-Token": "test-token"},
+        params={
+            "dataType": "CURRENT",
+            "alarmAckState": "ALL_ACTIVE_ALARMS",
+            "filter": _LICENSE_TRIAL_FILTER,
+            "limit": 10,
+            "marker": "page-1",
         },
     )
 
