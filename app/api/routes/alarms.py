@@ -80,13 +80,26 @@ def _simplify_hermes_alarm(raw: dict) -> dict:
     }
 
 
+def _parse_license_trial_fields(value: str | None) -> dict:
+    fields: dict[str, str] = {}
+    for item in (value or "").split(","):
+        key, separator, field_value = item.strip().partition("=")
+        if separator:
+            fields[key.strip()] = field_value.strip()
+    return {
+        "Function Type": fields.get("Function Type"),
+        "Trial Reason": fields.get("Trial Reason"),
+        "Grace Period Expire Date": fields.get("Grace Period Expire Date"),
+    }
+
+
 def _simplify_license_trial_alarm(raw: dict) -> dict:
     return {
         "Alarm ID": raw.get("alarmId"),
         "Alarm name": raw.get("alarmName"),
         "Comment": raw.get("comments"),
         "MO Name": raw.get("nativeMoName"),
-        "Location Information": raw.get("objectInstance"),
+        **_parse_license_trial_fields(raw.get("objectInstance")),
         "Occurred On (NT)": _epoch_ms_to_iso(raw.get("alarmRaisedTime")),
         "Cleared On (NT)": _epoch_ms_to_iso(raw.get("alarmClearedTime")),
         "Log Serial Number": raw.get("csn"),

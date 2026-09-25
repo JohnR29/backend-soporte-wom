@@ -105,7 +105,7 @@ def test_license_trial_alarms_maps_fields_and_renames_columns():
                     "alarmName": "License Trial Expiration",
                     "comments": "Licencia por expirar",
                     "nativeMoName": "NodeB-001",
-                    "objectInstance": "Sector 3",
+                    "objectInstance": "Function Type=eNodeB Function, Trial Reason=Expired License, Grace Period Expire Date=2026-10-10",
                     "alarmRaisedTime": "1735689600000",
                     "alarmClearedTime": "0",
                     "csn": "998877",
@@ -126,11 +126,35 @@ def test_license_trial_alarms_maps_fields_and_renames_columns():
         "Alarm name": "License Trial Expiration",
         "Comment": "Licencia por expirar",
         "MO Name": "NodeB-001",
-        "Location Information": "Sector 3",
+        "Function Type": "eNodeB Function",
+        "Trial Reason": "Expired License",
+        "Grace Period Expire Date": "2026-10-10",
         "Occurred On (NT)": _epoch_ms_to_iso("1735689600000"),
         "Cleared On (NT)": None,
         "Log Serial Number": "998877",
     }
+
+
+def test_license_trial_alarms_returns_null_for_missing_or_malformed_fields():
+    client = FakeHuaweiClient(
+        {
+            "alarmInformationList": [
+                {
+                    "alarmId": "26817",
+                    "objectInstance": "Function Type=eNodeB Function, malformed-field",
+                }
+            ]
+        }
+    )
+
+    response = _call_license_trial_endpoint(client)
+
+    assert response.status_code == 200
+    alarm = response.json()["alarms"][0]
+    assert alarm["Function Type"] == "eNodeB Function"
+    assert alarm["Trial Reason"] is None
+    assert alarm["Grace Period Expire Date"] is None
+    assert "Location Information" not in alarm
 
 
 def test_license_trial_alarms_sends_expected_query_params():
@@ -144,7 +168,6 @@ def test_license_trial_alarms_sends_expected_query_params():
         headers={"X-Auth-Token": "test-token"},
         params={
             "dataType": "CURRENT",
-            "alarmAckState": "ALL_ACTIVE_ALARMS",
             "filter": _LICENSE_TRIAL_FILTER,
             "limit": 10,
             "marker": "page-1",
