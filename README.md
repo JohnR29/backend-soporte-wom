@@ -26,7 +26,7 @@ Consulta `.env.example` (entorno local, sin proxy) y
 `.env.production.example` (VM, proxy habilitado). Variables principales:
 
 - `USE_PROXY` / `PROXY_URL` — habilitar solamente en la VM.
-- `HUAWEI_CA_CERT_PATH` — ruta al certificado CA usado para validar la cadena TLS de la API de Huawei.
+- `HUAWEI_VERIFY_SSL` — en producción se configura como `false` para Huawei; la conexión sigue cifrada, pero no se valida el certificado del servidor.
 - `HUAWEI_API_BASE_URL` — URL base de la API de Huawei.
 - `HUAWEI_USERNAME` / `HUAWEI_PASSWORD` — cuenta tecnica de Huawei, utilizada solamente por el backend.
 - `BACKEND_STATIC_TOKEN` — token fijo que los clientes envian en cada solicitud.
@@ -240,6 +240,23 @@ codigo original sin traducir.
 
 ## Despliegue en VM Ubuntu
 
-1. Copia `.env.production.example` a `.env` y completa los valores reales de `PROXY_URL` y `HUAWEI_CA_CERT_PATH`.
-2. Coloca el certificado CA en la ruta indicada por `HUAWEI_CA_CERT_PATH`.
-3. Ejecuta `uvicorn app.main:app --host 0.0.0.0 --port 8000` (detras de systemd/nginx si es necesario).
+Requiere Docker Engine y el plugin Docker Compose instalados en la VM. El despliegue asume que el proxy inverso existente corre en la misma VM.
+
+1. Copia `.env.production.example` a `.env.production` y completa los valores reales, incluidos `PROXY_URL`, `HUAWEI_USERNAME`, `HUAWEI_PASSWORD`, `BACKEND_STATIC_TOKEN` y `WOMPORTAL_HASH`. Conserva `HUAWEI_VERIFY_SSL=false` según la autorización de producción.
+2. Construye y valida la configuración, luego inicia el servicio:
+
+	```bash
+	docker compose config
+	docker compose build
+	docker compose up -d
+	```
+
+3. Comprueba que el contenedor esté saludable y que responda localmente:
+
+	```bash
+	docker compose ps
+	curl --fail http://127.0.0.1:8000/health
+	docker compose logs --tail=100 backend
+	```
+
+El puerto se publica únicamente en `127.0.0.1:8000`, para que el proxy inverso local siga atendiendo las solicitudes. Para actualizar, ejecuta `docker compose build` y `docker compose up -d`; para volver a la versión anterior, reconstruye desde el código/imagen previamente desplegados y vuelve a ejecutar `docker compose up -d`. No guardes `.env.production` ni secretos dentro de la imagen o en el repositorio.
