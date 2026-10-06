@@ -30,6 +30,8 @@ Consulta `.env.example` (entorno local, sin proxy) y
 - `HUAWEI_API_BASE_URL` — URL base de la API de Huawei.
 - `HUAWEI_USERNAME` / `HUAWEI_PASSWORD` — cuenta tecnica de Huawei, utilizada solamente por el backend.
 - `BACKEND_STATIC_TOKEN` — token fijo que los clientes envian en cada solicitud.
+- `DATABASE_URL` — conexión a Postgres para la auditoría (`postgresql+asyncpg://usuario:clave@host:5432/base`). Vacío desactiva la auditoría.
+- `AUDIT_MAX_BODY_BYTES` — tamaño máximo del cuerpo de request que se guarda (8192 por defecto); si lo supera solo se registra el tamaño.
 
 ## Autenticacion
 
@@ -238,6 +240,142 @@ convencion estandar Huawei/ITU X.733 y no estan confirmadas contra datos
 reales del MAE; si Huawei devuelve un codigo no mapeado, se conserva el
 codigo original sin traducir.
 
+## Auditoria de requests (Postgres)
+
+Cada request a la API se registra en la tabla `api_audit_log` de Postgres. Si
+`DATABASE_URL` esta vacio la auditoria queda desactivada y la API funciona igual.
+
+### Que se registra
+
+| Grupo | Columnas |
+|---|---|
+| Tiempo | `ts`, `duration_ms` |
+| Origen | `client_ip`, `x_forwarded_for` |
+| Request | `request_id`, `method`, `path`, `route_template`, `query_params`, `request_body`, `request_size` |
+| Resultado | `status_code`, `error_type`, `error_detail`, `response_size` |
+| Upstream | `upstream_service` (`huawei`/`womportal`), `upstream_status`, `upstream_duration_ms`, `upstream_calls` |
+| Negocio | `ne_names`, `mml_command` |
+
+No se guardan el token, su hash, el `User-Agent` ni un identificador de usuario:
+existe un unico token y los consumidores se identifican por IP. En `request_body`
+se enmascaran como `***` las claves `password`, `passwd`, `token`,
+`authorization`, `hash` y `secret`. Las respuestas de Huawei no se guardan, solo
+su tamaño. `error_detail` contiene el `detail` de la respuesta cuando el codigo
+es 4xx/5xx.
+
+Se omiten `/`, `/health`, `/docs`, `/openapi.json` y `/favicon.ico`
+(`_EXCLUDED_PATHS` en `app/api/audit_middleware.py`). Cada respuesta incluye el
+header `X-Request-ID`, igual al `request_id` guardado.
+
+### Como funciona
+
+- `app/api/audit_middleware.py`: middleware ASGI que captura el request y la respuesta.
+- `app/services/audit.py`: cola en memoria y tarea que inserta en Postgres. La
+  escritura es asincrona: si Postgres falla o la cola se llena (10 000), el
+  registro se pierde y se deja un warning en el log, pero la API no se ve afectada.
+  Al apagar la app se espera hasta 5 s para vaciar la cola.
+- `app/db/`: capa ORM (SQLAlchemy 2.0 async + asyncpg). `models.py` define `ApiAuditLog`.
+- Los hooks de httpx en `huawei_client.py` y `womportal_client.py` acumulan estado
+  y duracion de las llamadas upstream de cada request.
+
+`client_ip` es la IP de la conexion TCP. Si hay un proxy inverso delante de la
+app (como en la VM), sera la IP del proxy; en ese caso usa `x_forwarded_for`
+(puede ser falsificado por el cliente) o ejecuta uvicorn con `--proxy-headers
+--forwarded-allow-ips=<ip-del-proxy>`.
+
+### Base de datos por entorno
+
+Usa una instancia/base distinta por entorno; el codigo es el mismo y solo cambia
+`DATABASE_URL`:
+
+| Entorno | Base sugerida |
+|---|---|
+| Desarrollo (VM dev) | `soporte_audit_dev` |
+| Produccion (VM prod) | `soporte_audit` |
+
+Crea la base y un rol dueño, conectado como administrador (PostgreSQL 15+ no
+otorga `CREATE` en `public` por defecto):
+
+```sql
+CREATE ROLE audit_app LOGIN PASSWORD '...';
+CREATE DATABASE soporte_audit_dev OWNER audit_app;
+\c soporte_audit_dev
+ALTER SCHEMA public OWNER TO audit_app;
+```
+
+Si la base ya existe, alcanza con `GRANT ALL ON SCHEMA public TO audit_app;`
+ejecutado conectado a esa base. Luego define `DATABASE_URL` en el `.env`.
+
+### Migraciones con Alembic
+
+El esquema se versiona en `alembic/versions/`. Alembic lee `DATABASE_URL` de la
+configuracion de la app. Ejecuta los comandos desde la raiz del proyecto:
+
+```powershell
+alembic upgrade head       # aplica todas las migraciones pendientes
+alembic current            # version aplicada (debe mostrar 0001 (head))
+alembic history            # lista de migraciones
+alembic downgrade -1       # revierte la ultima migracion
+```
+
+Para cambiar el esquema:
+
+1. Edita `app/db/models.py`.
+2. Genera la migracion: `alembic revision --autogenerate -m "descripcion"`.
+3. Revisa el archivo creado en `alembic/versions/` (autogenerate no detecta todo).
+4. Aplica con `alembic upgrade head` en desarrollo y, despues de probar, en produccion.
+
+Aplica siempre las migraciones antes de iniciar la version de la app que las necesita.
+La tabla `alembic_version` guarda la version aplicada; no la modifiques a mano.
+
+### Rol de solo escritura (produccion)
+
+Para que la API no pueda modificar ni borrar registros, migra con el rol dueño
+(`audit_app`) y usa otro rol en el `DATABASE_URL` de la API:
+
+```sql
+CREATE ROLE audit_writer LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE soporte_audit TO audit_writer;
+GRANT USAGE ON SCHEMA public TO audit_writer;
+GRANT INSERT ON api_audit_log TO audit_writer;
+```
+
+`id` es `IDENTITY`, por lo que no requiere permisos sobre secuencias.
+
+### Consultas utiles
+
+```sql
+-- Ultimos requests
+SELECT ts, client_ip, method, path, status_code, duration_ms
+FROM api_audit_log ORDER BY ts DESC LIMIT 20;
+
+-- Errores de las ultimas 24 h
+SELECT ts, client_ip, path, status_code, error_detail
+FROM api_audit_log
+WHERE status_code >= 400 AND ts > now() - interval '24 hours'
+ORDER BY ts DESC;
+
+-- Actividad por IP
+SELECT client_ip, count(*) FROM api_audit_log GROUP BY client_ip ORDER BY 2 DESC;
+
+-- Comandos MML ejecutados sobre un nodo
+SELECT ts, client_ip, mml_command FROM api_audit_log
+WHERE 'NE-001' = ANY(ne_names) ORDER BY ts DESC;
+```
+
+### Retencion
+
+La tabla crece sin limite. Define una politica de retencion, por ejemplo:
+
+```sql
+DELETE FROM api_audit_log WHERE ts < now() - interval '12 months';
+```
+
+### Pruebas
+
+`tests/conftest.py` fuerza `DATABASE_URL` vacio para que los tests nunca escriban
+en la base real. Los tests de auditoria estan en `tests/test_audit.py`.
+
 ## Despliegue en VM Ubuntu
 
 Requiere Docker Engine y el plugin Docker Compose instalados en la VM. El despliegue asume que el proxy inverso existente corre en la misma VM.
@@ -251,7 +389,13 @@ Requiere Docker Engine y el plugin Docker Compose instalados en la VM. El despli
 	docker compose up -d
 	```
 
-3. Comprueba que el contenedor esté saludable y que responda localmente:
+3. Aplica las migraciones de base de datos (ver [Migraciones con Alembic](#migraciones-con-alembic)). La imagen incluye `alembic.ini` y `alembic/`:
+
+	```bash
+	docker compose run --rm backend alembic upgrade head
+	```
+
+4. Comprueba que el contenedor esté saludable y que responda localmente:
 
 	```bash
 	docker compose ps

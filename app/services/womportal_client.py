@@ -1,6 +1,7 @@
 import httpx
 
 from app.core.config import get_settings
+from app.services.audit import upstream_hooks
 
 _client: httpx.AsyncClient | None = None
 
@@ -14,6 +15,7 @@ def _build_client() -> httpx.AsyncClient:
         # Never let httpx auto-pick up HTTP(S)_PROXY from the OS environment;
         # proxy usage must only come from USE_PROXY/PROXY_URL in .env.
         "trust_env": False,
+        "event_hooks": upstream_hooks("womportal"),
     }
 
     # Only WOM Portal goes through the proxy (Ubuntu VM); local dev leaves USE_PROXY=false.

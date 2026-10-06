@@ -7,6 +7,7 @@ import time
 import httpx
 
 from app.core.config import get_settings
+from app.services.audit import upstream_hooks
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ def _build_client() -> httpx.AsyncClient:
         # Huawei is reached directly (no proxy), and httpx must not auto-pick
         # up HTTP(S)_PROXY from the environment.
         "trust_env": False,
+        "event_hooks": upstream_hooks("huawei"),
     }
 
     if not settings.huawei_verify_ssl:

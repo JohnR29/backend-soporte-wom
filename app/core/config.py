@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     womportal_hash: str = ""
     womportal_id_sistema: int = 63
 
+    # Auditoría en Postgres; vacío desactiva la auditoría.
+    database_url: str | None = None
+    audit_max_body_bytes: int = 8192
+
     # Fixed RNC list for UMTS NodeB lookups (no Huawei endpoint enumerates them).
     umts_rnc_names: str = "STG03,STG04,STG05,STG06,ATF02,CCP2,PTM01"
 
