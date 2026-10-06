@@ -25,7 +25,7 @@ Visita `http://127.0.0.1:8000/health` para comprobar el estado del servicio y
 Consulta `.env.example` (entorno local, sin proxy) y
 `.env.production.example` (VM, proxy habilitado). Variables principales:
 
-- `USE_PROXY` / `PROXY_URL` — habilitar solamente en la VM.
+- `USE_PROXY` / `PROXY_URL` — habilitar solamente en la VM. El proxy se usa para construir la imagen (`pip`) y para las llamadas a WOM Portal; la API de Huawei siempre se consulta sin proxy. En local deja `USE_PROXY=false` y `PROXY_URL` vacío.
 - `HUAWEI_VERIFY_SSL` — en producción se configura como `false` para Huawei; la conexión sigue cifrada, pero no se valida el certificado del servidor.
 - `HUAWEI_API_BASE_URL` — URL base de la API de Huawei.
 - `HUAWEI_USERNAME` / `HUAWEI_PASSWORD` — cuenta tecnica de Huawei, utilizada solamente por el backend.

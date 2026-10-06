@@ -12,22 +12,16 @@ logger = logging.getLogger(__name__)
 
 
 def _build_client() -> httpx.AsyncClient:
-    """Single place where proxy and CA cert handling for the Huawei API live."""
+    """Single place where CA cert handling for the Huawei API lives."""
     settings = get_settings()
 
     client_kwargs: dict = {
         "base_url": settings.huawei_api_base_url,
         "timeout": settings.request_timeout_seconds,
-        # Never let httpx auto-pick up HTTP(S)_PROXY from the OS environment;
-        # proxy usage must only come from USE_PROXY/PROXY_URL in .env.
+        # Huawei is reached directly (no proxy), and httpx must not auto-pick
+        # up HTTP(S)_PROXY from the environment.
         "trust_env": False,
     }
-
-    # Proxy is only needed on the Ubuntu VM; local dev leaves USE_PROXY=false.
-    if settings.use_proxy:
-        if not settings.proxy_url:
-            raise RuntimeError("USE_PROXY is true but PROXY_URL is not set")
-        client_kwargs["proxy"] = settings.proxy_url
 
     if not settings.huawei_verify_ssl:
         client_kwargs["verify"] = False

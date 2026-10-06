@@ -16,6 +16,7 @@ def _build_client() -> httpx.AsyncClient:
         "trust_env": False,
     }
 
+    # Only WOM Portal goes through the proxy (Ubuntu VM); local dev leaves USE_PROXY=false.
     if settings.use_proxy:
         if not settings.proxy_url:
             raise RuntimeError("USE_PROXY is true but PROXY_URL is not set")
