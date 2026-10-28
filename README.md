@@ -202,6 +202,10 @@ indicado en `baseObjectInstance`. Acepta los parametros de consulta opcionales
 `limit` (1-1000, por defecto 500) y `marker` (cursor de paginacion; se
 reenvia el `marker` de la respuesta anterior para pedir la siguiente pagina).
 
+Para integrar el flujo automatizado de Hermes (filtro fijo de alarmas en toda
+la red, respuesta simplificada y paginacion completa), consulta la guia
+[API_ALARMS_HERMES.md](./API_ALARMS_HERMES.md).
+
 ```
 GET /alarms/MBTS-OH8315
 GET /alarms/MBTS-OH8315?limit=100&marker=<marker-de-la-respuesta-anterior>

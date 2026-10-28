@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+import asyncio
+import io
+import zipfile
 import httpx
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -451,6 +454,172 @@ async def execute_mml_command(
 ):
     """Execute one synchronous MML command against up to 100 network elements."""
     return await _execute_mml(request.command, request.ne_names)
+
+
+_SCRIPT_MAX_BYTES = 2 * 1024 * 1024  # Huawei limit; larger uploads get a connection reset instead of a 413.
+_SCRIPT_MAX_FILES = 10
+_SCRIPT_STATE_DONE = 3
+_SCRIPT_STATES_RUNNING = (0, 1)
+_SCRIPT_TASKS_PATH = "/api/rest/mmlManagement/v1/tasks"
+
+
+def _script_task_name(filename: str) -> str:
+    # Huawei rejects dots and other symbols in taskName (retCode 90052); keep it to [A-Za-z0-9_].
+    stem = re.sub(r"\.[^.]*$", "", filename)
+    return re.sub(r"[^A-Za-z0-9_]", "_", stem)[:64] or "mml_script"
+
+
+async def _huawei_request(method: str, path: str, action: str, **kwargs) -> httpx.Response:
+    client = get_client()
+    try:
+        response = await client.request(method, path, headers=await get_huawei_headers(), **kwargs)
+        response.raise_for_status()
+        mark_huawei_activity()
+    except httpx.HTTPStatusError as error:
+        _raise_for_huawei_error(error, action)
+    except httpx.HTTPError as error:
+        logger.exception("Huawei %s could not be completed: %s", action, error)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Huawei {action} could not be completed",
+        ) from error
+    return response
+
+
+async def _wait_script_task(task_id: str) -> None:
+    settings = get_settings()
+    deadline = time.monotonic() + settings.mml_script_timeout_seconds
+    while True:
+        response = await _huawei_request(
+            "GET", f"{_SCRIPT_TASKS_PATH}/{task_id}/status", "MML script status"
+        )
+        try:
+            state = int(response.json().get("currentState"))
+        except (TypeError, ValueError):
+            state = None
+        if state == _SCRIPT_STATE_DONE:
+            return
+        if state not in _SCRIPT_STATES_RUNNING:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Unexpected MML script task state: {response.json().get('currentState')}",
+            )
+        if time.monotonic() >= deadline:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Huawei MML script task timed out while processing",
+            )
+        await asyncio_sleep(settings.mml_script_poll_interval_seconds)
+
+
+async def _run_script_file(filename: str, content: bytes, run_mode: str) -> dict:
+    task_id: str | None = None
+    try:
+        response = await _huawei_request(
+            "POST",
+            _SCRIPT_TASKS_PATH,
+            "MML script upload",
+            data={"taskName": _script_task_name(filename), "runMode": run_mode},
+            files={"file": (filename, content, "text/plain")},
+        )
+        task_id = str(response.json().get("taskId"))
+        await _wait_script_task(task_id)
+        result = await _huawei_request(
+            "GET", f"{_SCRIPT_TASKS_PATH}/{task_id}/result", "MML script result"
+        )
+        return {"filename": filename, "taskId": task_id, "status": "ok", "result": result.text}
+    except HTTPException as error:
+        return {"filename": filename, "taskId": task_id, "status": "failed", "error": error.detail}
+    finally:
+        if task_id:
+            try:
+                await _huawei_request("DELETE", f"{_SCRIPT_TASKS_PATH}/{task_id}", "MML script cleanup")
+            except HTTPException:
+                logger.warning("Could not delete MML script task %s", task_id)
+
+
+@router.post(
+    "/mml/scripts",
+    summary="Ejecutar scripts MML por lotes",
+    description=(
+        "Sube uno o más archivos TXT con scripts MML (hasta 2 MB cada uno), "
+        "ejecuta una tarea de Huawei por archivo en paralelo, espera su "
+        "finalización y devuelve el resultado de cada uno. Las tareas se "
+        "eliminan en Huawei al terminar. Un archivo fallido no afecta a los demás."
+    ),
+    response_description="Un resultado por archivo (status ok/failed), o un TXT/ZIP descargable.",
+    response_model=None,
+    responses=_MML_RESPONSES,
+)
+async def execute_mml_scripts(
+    files: list[UploadFile] = File(description="Archivos TXT con scripts MML."),
+    run_mode: str = Form(default="parallel", pattern="^(serial|parallel)$"),
+    output: str = Form(
+        default="json",
+        pattern="^(json|txt|zip)$",
+        description="json: respuesta JSON; txt: un TXT con todos los resultados; zip: un TXT por archivo.",
+    ),
+    user_id: str = Depends(require_user),
+) -> dict | Response:
+    if not 1 <= len(files) <= _SCRIPT_MAX_FILES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Se requieren entre 1 y {_SCRIPT_MAX_FILES} archivos.",
+        )
+
+    contents: list[tuple[str, bytes]] = []
+    for upload in files:
+        name = upload.filename or "script.txt"
+        data = await upload.read(_SCRIPT_MAX_BYTES + 1)
+        if not data.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"El archivo '{name}' está vacío.",
+            )
+        if len(data) > _SCRIPT_MAX_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"El archivo '{name}' supera el máximo de 2 MB.",
+            )
+        contents.append((name, data))
+
+    semaphore = asyncio.Semaphore(get_settings().mml_script_max_concurrency)
+
+    async def bounded(name: str, data: bytes) -> dict:
+        async with semaphore:
+            return await _run_script_file(name, data, run_mode)
+
+    results = list(await asyncio.gather(*(bounded(name, data) for name, data in contents)))
+    if output == "json":
+        return {"results": results}
+    return _script_results_download(results, output)
+
+
+def _script_result_text(item: dict) -> str:
+    return item["result"] if item["status"] == "ok" else f"ERROR: {item['error']}\n"
+
+
+def _script_results_download(results: list[dict], output: str) -> Response:
+    if output == "txt":
+        body = "".join(
+            f"===== {item['filename']} =====\n{_script_result_text(item)}\n" for item in results
+        )
+        return Response(
+            body,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="resultados_mml.txt"'},
+        )
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for index, item in enumerate(results, start=1):
+            stem = _script_task_name(item["filename"])
+            archive.writestr(f"{index:02d}_{stem}_resultado.txt", _script_result_text(item))
+    return Response(
+        buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="resultados_mml.zip"'},
+    )
 
 
 def _records_dataframe(

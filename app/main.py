@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 
 from app.api.audit_middleware import AuditMiddleware
 from app.api.routes.alarms import router as alarms_router
@@ -55,6 +56,30 @@ app.add_middleware(AuditMiddleware)
 app.include_router(huawei_router)
 app.include_router(alarms_router)
 app.include_router(tickets_router)
+
+
+def _openapi_with_binary_files() -> dict:
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        tags=app.openapi_tags,
+    )
+    # Swagger UI only renders a file picker for `format: binary`, not `contentMediaType`.
+    for body in schema.get("components", {}).get("schemas", {}).values():
+        for prop in body.get("properties", {}).values():
+            for node in (prop, prop.get("items", {})):
+                if node.get("contentMediaType") == "application/octet-stream":
+                    node.pop("contentMediaType")
+                    node["format"] = "binary"
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = _openapi_with_binary_files
 
 
 @app.get(

@@ -1125,3 +1125,105 @@ def test_get_measurement_kpis_polls_async_task_and_flattens_merged_result():
         params={"limit": 1000},
     )
 
+
+
+class FakeScriptClient:
+    """Routes Huawei MML script task calls by method/path suffix."""
+
+    def __init__(self, fail_upload_for=None):
+        self.calls = []
+        self.fail_upload_for = fail_upload_for
+
+    async def request(self, method, path, headers=None, data=None, files=None, **kwargs):
+        self.calls.append((method, path))
+        req = httpx.Request(method, "https://huawei.example" + path)
+        if method == "POST":
+            name = data["taskName"]
+            if name == self.fail_upload_for:
+                return httpx.Response(400, json={"retCode": "1", "retMessage": "bad script"}, request=req)
+            return httpx.Response(200, json={"taskId": f"id-{name}"}, request=req)
+        if path.endswith("/status"):
+            return httpx.Response(200, json={"currentState": 3}, request=req)
+        if path.endswith("/result"):
+            return httpx.Response(200, text=f"result of {path.split('/')[-2]}", request=req)
+        return httpx.Response(200, json={}, request=req)
+
+
+def _post_scripts(client, files):
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "t"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            return test_client.post("/mml/scripts", files=files)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mml_scripts_runs_each_file_and_deletes_tasks():
+    client = FakeScriptClient()
+    response = _post_scripts(
+        client,
+        [("files", ("a.txt", b"LST VER:;", "text/plain")), ("files", ("b.txt", b"LST NE:;", "text/plain"))],
+    )
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert [r["status"] for r in results] == ["ok", "ok"]
+    assert results[0]["result"] == "result of id-a"
+    assert ("DELETE", "/api/rest/mmlManagement/v1/tasks/id-a") in client.calls
+    assert ("DELETE", "/api/rest/mmlManagement/v1/tasks/id-b") in client.calls
+
+
+def test_mml_scripts_one_failure_does_not_affect_others():
+    client = FakeScriptClient(fail_upload_for="bad")
+    response = _post_scripts(
+        client,
+        [("files", ("bad.txt", b"x", "text/plain")), ("files", ("ok.txt", b"LST VER:;", "text/plain"))],
+    )
+
+    results = response.json()["results"]
+    assert results[0]["status"] == "failed"
+    assert results[0]["error"] == "bad script"
+    assert results[1]["status"] == "ok"
+
+
+def test_mml_scripts_rejects_oversized_and_empty_files():
+    client = FakeScriptClient()
+    big = _post_scripts(client, [("files", ("big.txt", b"x" * (2 * 1024 * 1024 + 1), "text/plain"))])
+    empty = _post_scripts(client, [("files", ("e.txt", b"  ", "text/plain"))])
+
+    assert big.status_code == 422
+    assert empty.status_code == 422
+    assert client.calls == []
+
+
+def test_mml_scripts_txt_and_zip_downloads():
+    import io, zipfile
+
+    files = [("files", ("a.txt", b"LST VER:;", "text/plain")), ("files", ("b.txt", b"LST NE:;", "text/plain"))]
+
+    def post(output):
+        app.dependency_overrides[require_user] = lambda: "operator-1"
+        try:
+            with (
+                patch("app.api.routes.huawei.get_client", return_value=FakeScriptClient()),
+                patch("app.api.routes.huawei.get_huawei_headers", new=AsyncMock(return_value={})),
+                TestClient(app) as c,
+            ):
+                return c.post("/mml/scripts", files=files, data={"output": output})
+        finally:
+            app.dependency_overrides.clear()
+
+    txt = post("txt")
+    assert txt.headers["content-type"].startswith("text/plain")
+    assert "===== a.txt =====\nresult of id-a" in txt.text
+
+    archive = zipfile.ZipFile(io.BytesIO(post("zip").content))
+    assert archive.namelist() == ["01_a_resultado.txt", "02_b_resultado.txt"]
+    assert archive.read("01_a_resultado.txt") == b"result of id-a"
