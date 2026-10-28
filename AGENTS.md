@@ -30,7 +30,7 @@ copy .env.example .env
 uvicorn app.main:app --reload
 ```
 
-See [README.md](README.md) for full setup and deployment steps.
+See [README.md](README.md) for full setup and deployment steps. The Docker deployment mounts `app/`, `alembic/` and `alembic.ini` read-only and reloads on `git pull`.
 
 ## Adding a new Huawei endpoint
 

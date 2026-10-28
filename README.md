@@ -393,7 +393,7 @@ Requiere Docker Engine y el plugin Docker Compose instalados en la VM. El despli
 	docker compose up -d
 	```
 
-3. Aplica las migraciones de base de datos (ver [Migraciones con Alembic](#migraciones-con-alembic)). La imagen incluye `alembic.ini` y `alembic/`:
+3. La imagen se construye solo para la instalacion inicial y los cambios de dependencias; `app/`, `alembic/` y `alembic.ini` se montan en solo lectura desde el checkout. Aplica las migraciones de base de datos (ver [Migraciones con Alembic](#migraciones-con-alembic)):
 
 	```bash
 	docker compose run --rm backend alembic upgrade head
@@ -407,4 +407,13 @@ Requiere Docker Engine y el plugin Docker Compose instalados en la VM. El despli
 	docker compose logs --tail=100 backend
 	```
 
-El puerto se publica únicamente en `127.0.0.1:8000`, para que el proxy inverso local siga atendiendo las solicitudes. Para actualizar, ejecuta `docker compose build` y `docker compose up -d`; para volver a la versión anterior, reconstruye desde el código/imagen previamente desplegados y vuelve a ejecutar `docker compose up -d`. No guardes `.env.production` ni secretos dentro de la imagen o en el repositorio.
+El puerto se publica únicamente en `127.0.0.1:8000`, para que el proxy inverso local siga atendiendo las solicitudes. Para actualizar cambios solo de código basta `git pull`: uvicorn recarga automáticamente al detectar cambios en `app/`. Para volver a la versión anterior, haz `git checkout`/revert del commit previo; la recarga lo aplica automáticamente (reconstruye solo si cambiaron dependencias). No guardes `.env.production` ni secretos dentro de la imagen o en el repositorio.
+
+Cambios que aún requieren acción manual:
+
+| Cambio | Acción |
+|--------|--------|
+| `requirements.txt` o imagen base | `docker compose build` y `docker compose up -d` |
+| Migración Alembic | `docker compose run --rm backend alembic upgrade head` (la recarga no la aplica) |
+| Cambio en `.env` | `docker compose up -d --force-recreate backend` |
+| Conflictos o cambios locales en git | Resolverlos antes de confiar en el checkout |

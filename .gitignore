@@ -7,3 +7,17 @@ certs/*
 .pytest_cache/
 uvicorn.log
 *.json
+
+# ==============================================================================
+# Spec Kit - Cachés y configuración local
+# ==============================================================================
+# Cachés temporales descargadas por extensiones o bundles
+.specify/extensions/.cache/
+.specify/extensions/.backup/
+
+# Configuraciones locales de desarrollador para extensiones individuales
+.specify/extensions/*/local-config.yml
+
+# Archivos temporales de análisis o logs de convergencia interna
+.specify/**/*.tmp
+.specify/**/*.log
