@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes.auth import require_user
@@ -507,6 +508,51 @@ Local Cell ID  Frequency band  Downlink EARFCN
     assert response.status_code == 200
     body = response.json()
     assert [record["ne_name"] for record in body["records"]] == ["NE-001"]
+    assert body["errors"] == [{"ne_name": "NE-OFFLINE", "error": "Ne is not connected."}]
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "commands"),
+    [
+        ("/mml/cell-summary-lte", ["DSP CELL:;"]),
+        ("/mml/cell-summary-nr", ["DSP NRCELL:;"]),
+    ],
+)
+def test_cell_summary_single_offline_ne_returns_200_with_errors(endpoint, commands):
+    client = FakeHuaweiClient({})
+    client.post.side_effect = lambda *args, **kwargs: httpx.Response(
+        200,
+        json={
+            "results": [
+                {
+                    "name": "NE-OFFLINE",
+                    "report": "Ne is not connected.",
+                    "result": "Failed.",
+                    "retCode": -1,
+                }
+            ]
+        },
+        request=httpx.Request("POST", "https://huawei.example"),
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(endpoint, json={"ne_names": ["NE-OFFLINE"]})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["commands"] == commands
+    assert body["records"] == []
+    assert body["count"] == 0
     assert body["errors"] == [{"ne_name": "NE-OFFLINE", "error": "Ne is not connected."}]
 
 

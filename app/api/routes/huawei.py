@@ -626,7 +626,9 @@ def _records_dataframe(
     payload: dict,
     command_name: str,
     key_column: str = "Local Cell ID",
+    empty_columns: list[str] | None = None,
 ) -> pd.DataFrame:
+    """Flatten NE reports; with no records and `empty_columns`, return an empty frame instead of 502."""
     records: list[dict] = []
     for result in payload.get("results", []):
         report = result.get("report")
@@ -635,6 +637,9 @@ def _records_dataframe(
         for record in report.get("records", []):
             if isinstance(record, dict):
                 records.append({**record, "ne_name": result.get("name")})
+
+    if not records and empty_columns is not None:
+        return pd.DataFrame(columns=empty_columns)
 
     dataframe = pd.DataFrame.from_records(records)
     if key_column not in dataframe.columns:
@@ -723,22 +728,31 @@ async def create_cell_summary(
     user_id: str = Depends(require_user),
 ):
     """Extrae el estado de celdas LTE en tiempo real"""
-    dsp_payload = await _execute_mml("DSP CELL:;", request.ne_names)
-    dsp_dataframe = _records_dataframe(dsp_payload, "DSP CELL")[[
+    dsp_columns = [
         "ne_name",
         "Local Cell ID",
         "Cell Name",
         "Cell instance state",
         "Maximum transmit power(0.1dBm)",
-    ]]
+    ]
+    dsp_payload = await _execute_mml("DSP CELL:;", request.ne_names)
+    dsp_dataframe = _records_dataframe(dsp_payload, "DSP CELL", empty_columns=dsp_columns)[dsp_columns]
+    if dsp_dataframe.empty:
+        return {
+            "commands": ["DSP CELL:;"],
+            "records": [],
+            "count": 0,
+            "errors": _ne_errors(dsp_payload),
+        }
 
-    lst_payload = await _execute_mml("LST CELL:;", request.ne_names)
-    lst_dataframe = _records_dataframe(lst_payload, "LST CELL")[[
+    lst_columns = [
         "ne_name",
         "Local Cell ID",
         "Frequency band",
         "Downlink EARFCN",
-    ]]
+    ]
+    lst_payload = await _execute_mml("LST CELL:;", request.ne_names)
+    lst_dataframe = _records_dataframe(lst_payload, "LST CELL", empty_columns=lst_columns)[lst_columns]
 
     summary_dataframe = dsp_dataframe.merge(
         lst_dataframe,
@@ -773,29 +787,40 @@ async def create_cell_summary_nr(
     user_id: str = Depends(require_user),
 ):
     """Extrae el estado y la configuración de celdas NR en tiempo real."""
+    nrcell_columns = [
+        "ne_name",
+        "NR Cell ID",
+        "Cell Name",
+        "Cell Available State",
+    ]
     nrcell_payload = await _execute_mml("DSP NRCELL:;", request.ne_names)
     nrcell_dataframe = _records_dataframe(
         nrcell_payload,
         "DSP NRCELL",
         key_column="NR Cell ID",
-    )[[
-        "ne_name",
-        "NR Cell ID",
-        "Cell Name",
-        "Cell Available State",
-    ]]
+        empty_columns=nrcell_columns,
+    )[nrcell_columns]
+    if nrcell_dataframe.empty:
+        return {
+            "commands": ["DSP NRCELL:;"],
+            "records": [],
+            "count": 0,
+            "errors": _ne_errors(nrcell_payload),
+        }
 
+    nrducell_columns = [
+        "ne_name",
+        "Cell ID",
+        "Frequency Band",
+        "Downlink NARFCN",
+    ]
     nrducell_payload = await _execute_mml("LST NRDUCELL:;", request.ne_names)
     nrducell_dataframe = _records_dataframe(
         nrducell_payload,
         "LST NRDUCELL",
         key_column="Cell ID",
-    )[[
-        "ne_name",
-        "Cell ID",
-        "Frequency Band",
-        "Downlink NARFCN",
-    ]].rename(columns={"Cell ID": "NR Cell ID"})
+        empty_columns=nrducell_columns,
+    )[nrducell_columns].rename(columns={"Cell ID": "NR Cell ID"})
 
     summary_dataframe = nrcell_dataframe.merge(
         nrducell_dataframe,
@@ -804,16 +829,18 @@ async def create_cell_summary_nr(
         validate="many_to_one",
     )
 
+    nrducelltrp_columns = [
+        "ne_name",
+        "NR DU Cell ID",
+        "Max Transmit Power(0.1dBm)",
+    ]
     nrducelltrp_payload = await _execute_mml("LST NRDUCELLTRP:;", request.ne_names)
     nrducelltrp_dataframe = _records_dataframe(
         nrducelltrp_payload,
         "LST NRDUCELLTRP",
         key_column="NR DU Cell ID",
-    )[[
-        "ne_name",
-        "NR DU Cell ID",
-        "Max Transmit Power(0.1dBm)",
-    ]]
+        empty_columns=nrducelltrp_columns,
+    )[nrducelltrp_columns]
 
     summary_dataframe = summary_dataframe.merge(
         nrducelltrp_dataframe,
