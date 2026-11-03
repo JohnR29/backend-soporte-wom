@@ -8,13 +8,16 @@ from app.api.audit_middleware import AuditMiddleware
 from app.api.routes.alarms import router as alarms_router
 from app.api.routes.huawei import router as huawei_router
 from app.api.routes.tickets import router as tickets_router
+from app.core.config import get_settings
 from app.services.audit import close_audit, init_audit
 from app.services.huawei_client import close_client, huawei_keepalive_loop
+from app.services.node_resolution import close_site_directory, init_site_directory
 from app.services.womportal_client import close_client as close_womportal_client
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    init_site_directory(get_settings().site_directory_database_url)
     await init_audit()
     keepalive_task = asyncio.create_task(huawei_keepalive_loop())
     yield
@@ -26,6 +29,7 @@ async def lifespan(app: FastAPI):
     await close_client()
     await close_womportal_client()
     await close_audit()
+    await close_site_directory()
 
 
 app = FastAPI(

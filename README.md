@@ -31,6 +31,7 @@ Consulta `.env.example` (entorno local, sin proxy) y
 - `HUAWEI_USERNAME` / `HUAWEI_PASSWORD` — cuenta tecnica de Huawei, utilizada solamente por el backend.
 - `BACKEND_STATIC_TOKEN` — token fijo que los clientes envian en cada solicitud.
 - `DATABASE_URL` — conexión a Postgres para la auditoría (`postgresql+asyncpg://usuario:clave@host:5432/base`). Vacío desactiva la auditoría.
+- `SITE_DIRECTORY_DATABASE_URL` — conexión PostgreSQL de solo lectura para `public.cellreference`, independiente de `DATABASE_URL`; es necesaria para las consultas MML que resuelven sitios. Usa un rol limitado a lectura de esa tabla. Vacía, las rutas afectadas responden `503`.
 - `AUDIT_MAX_BODY_BYTES` — tamaño máximo del cuerpo de request que se guarda (8192 por defecto); si lo supera solo se registra el tamaño.
 
 ## Autenticacion
@@ -50,6 +51,24 @@ configurado fuera de la aplicacion.
 Todos los endpoints MML requieren el token del backend en la cabecera
 `Authorization`. La lista de nodos (`ne_names`) debe contener entre 1 y 100
 nombres.
+
+Las rutas `POST /mml/command`, `/mml/cell-summary-lte`,
+`/mml/cell-summary-nr` y `/mml/kpis` aceptan el nemónico del sitio o un nombre
+de nodo completo. El backend consulta `public.cellreference` y usa el valor de
+`nodo`; `POST /mml/cell-summary-umts` resuelve `nodeb_name` a la columna
+`nodeb`. La búsqueda ignora mayúsculas y espacios externos, y los nombres
+completos se envían con su valor canónico del directorio.
+
+Las cinco respuestas agregan `name_resolution` en el mismo orden que las
+entradas. Cada elemento incluye `input`, `resolved` y `status`; un nombre
+desconocido incluye además hasta cinco `suggestions` ordenadas por similitud.
+En lotes, las entradas resueltas se consultan aunque otras fallen. UMTS
+responde `404` para un nombre desconocido y `422` si el sitio carece de
+`nodeb`; la falta de configuración o disponibilidad del directorio responde
+`503`. El cuerpo original permanece en auditoría y `ne_names` guarda los
+nombres efectivos enviados a Huawei. Si un sitio tiene varios destinos
+distintos para la tecnología solicitada, `name_resolution` devuelve
+`ambiguous_mapping` y no se consulta Huawei; UMTS responde `422`.
 
 ### Ejecutar un comando
 

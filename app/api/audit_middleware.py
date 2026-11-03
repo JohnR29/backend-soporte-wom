@@ -96,10 +96,16 @@ class AuditMiddleware:
             route = scope.get("route")
             ne_names = None
             command = None
+            state = scope.get("state")
+            resolved_names = (
+                state.get("resolved_ne_names") if isinstance(state, dict) else None
+            )
+            if isinstance(resolved_names, list):
+                ne_names = [str(name) for name in resolved_names]
             if isinstance(body, dict):
                 command = body.get("command") if isinstance(body.get("command"), str) else None
                 names = body.get("ne_names") or ([body["nodeb_name"]] if "nodeb_name" in body else None)
-                if isinstance(names, list):
+                if ne_names is None and isinstance(names, list):
                     ne_names = [str(name) for name in names]
 
             record(

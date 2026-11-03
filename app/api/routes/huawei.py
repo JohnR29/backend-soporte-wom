@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request as HttpRequest, Response, UploadFile, status
 import asyncio
 import io
 import zipfile
@@ -16,6 +16,7 @@ from app.api.routes.auth import require_user
 from app.core.config import get_settings
 from app.services.huawei_client import get_client, get_huawei_headers, mark_huawei_activity
 from app.services.mml_parser import MMLAutoParser
+from app.services.node_resolution import resolve_names
 
 router = APIRouter(tags=["MML"])
 logger = logging.getLogger(__name__)
@@ -101,6 +102,19 @@ def _result_failed(result: dict) -> bool:
     if ret_code not in (0, "0", None):
         return True
     return str(result.get("result", "")).strip().lower().startswith("fail")
+
+
+async def _resolve_node_names(
+    http_request: HttpRequest,
+    names: list[str],
+    target_column: str = "nodo",
+) -> tuple[list[str], list[dict]]:
+    name_resolution = await resolve_names(names, target_column)
+    resolved_names = [
+        item["resolved"] for item in name_resolution if item["status"] == "resolved"
+    ]
+    http_request.state.resolved_ne_names = resolved_names
+    return resolved_names, name_resolution
 
 
 async def _post_mml(command: str, ne_names: list[str]) -> dict:
@@ -430,9 +444,15 @@ async def _create_measurement_task(ne_names: list[str]) -> dict:
 )
 async def get_measurement_kpis(
     request: MeasurementResultsRequest,
+    http_request: HttpRequest,
     user_id: str = Depends(require_user),
 ) -> dict:
-    return await _create_measurement_task(request.ne_names)
+    resolved_names, name_resolution = await _resolve_node_names(http_request, request.ne_names)
+    if not resolved_names:
+        return {"records": [], "name_resolution": name_resolution}
+    result = await _create_measurement_task(resolved_names)
+    result["name_resolution"] = name_resolution
+    return result
 
 
 @router.post(
@@ -450,10 +470,16 @@ async def get_measurement_kpis(
 )
 async def execute_mml_command(
     request: MmlCommandRequest,
+    http_request: HttpRequest,
     user_id: str = Depends(require_user),
 ):
     """Execute one synchronous MML command against up to 100 network elements."""
-    return await _execute_mml(request.command, request.ne_names)
+    resolved_names, name_resolution = await _resolve_node_names(http_request, request.ne_names)
+    if not resolved_names:
+        return {"results": [], "name_resolution": name_resolution}
+    result = await _execute_mml(request.command, resolved_names)
+    result["name_resolution"] = name_resolution
+    return result
 
 
 _SCRIPT_MAX_BYTES = 2 * 1024 * 1024  # Huawei limit; larger uploads get a connection reset instead of a 413.
@@ -725,6 +751,7 @@ def _common_cell_name_pattern(cell_names: list[str]) -> str:
 )
 async def create_cell_summary(
     request: CellSummaryRequest,
+    http_request: HttpRequest,
     user_id: str = Depends(require_user),
 ):
     """Extrae el estado de celdas LTE en tiempo real"""
@@ -735,7 +762,8 @@ async def create_cell_summary(
         "Cell instance state",
         "Maximum transmit power(0.1dBm)",
     ]
-    dsp_payload = await _execute_mml("DSP CELL:;", request.ne_names)
+    resolved_names, name_resolution = await _resolve_node_names(http_request, request.ne_names)
+    dsp_payload = await _execute_mml("DSP CELL:;", resolved_names) if resolved_names else {"results": []}
     dsp_dataframe = _records_dataframe(dsp_payload, "DSP CELL", empty_columns=dsp_columns)[dsp_columns]
     if dsp_dataframe.empty:
         return {
@@ -743,6 +771,7 @@ async def create_cell_summary(
             "records": [],
             "count": 0,
             "errors": _ne_errors(dsp_payload),
+            "name_resolution": name_resolution,
         }
 
     lst_columns = [
@@ -751,7 +780,7 @@ async def create_cell_summary(
         "Frequency band",
         "Downlink EARFCN",
     ]
-    lst_payload = await _execute_mml("LST CELL:;", request.ne_names)
+    lst_payload = await _execute_mml("LST CELL:;", resolved_names)
     lst_dataframe = _records_dataframe(lst_payload, "LST CELL", empty_columns=lst_columns)[lst_columns]
 
     summary_dataframe = dsp_dataframe.merge(
@@ -767,6 +796,7 @@ async def create_cell_summary(
         "records": summary_dataframe.to_dict(orient="records"),
         "count": len(summary_dataframe),
         "errors": _ne_errors(dsp_payload, lst_payload),
+        "name_resolution": name_resolution,
     }
 
 
@@ -784,6 +814,7 @@ async def create_cell_summary(
 )
 async def create_cell_summary_nr(
     request: CellSummaryRequest,
+    http_request: HttpRequest,
     user_id: str = Depends(require_user),
 ):
     """Extrae el estado y la configuración de celdas NR en tiempo real."""
@@ -793,7 +824,8 @@ async def create_cell_summary_nr(
         "Cell Name",
         "Cell Available State",
     ]
-    nrcell_payload = await _execute_mml("DSP NRCELL:;", request.ne_names)
+    resolved_names, name_resolution = await _resolve_node_names(http_request, request.ne_names)
+    nrcell_payload = await _execute_mml("DSP NRCELL:;", resolved_names) if resolved_names else {"results": []}
     nrcell_dataframe = _records_dataframe(
         nrcell_payload,
         "DSP NRCELL",
@@ -806,6 +838,7 @@ async def create_cell_summary_nr(
             "records": [],
             "count": 0,
             "errors": _ne_errors(nrcell_payload),
+            "name_resolution": name_resolution,
         }
 
     nrducell_columns = [
@@ -814,7 +847,7 @@ async def create_cell_summary_nr(
         "Frequency Band",
         "Downlink NARFCN",
     ]
-    nrducell_payload = await _execute_mml("LST NRDUCELL:;", request.ne_names)
+    nrducell_payload = await _execute_mml("LST NRDUCELL:;", resolved_names)
     nrducell_dataframe = _records_dataframe(
         nrducell_payload,
         "LST NRDUCELL",
@@ -834,7 +867,7 @@ async def create_cell_summary_nr(
         "NR DU Cell ID",
         "Max Transmit Power(0.1dBm)",
     ]
-    nrducelltrp_payload = await _execute_mml("LST NRDUCELLTRP:;", request.ne_names)
+    nrducelltrp_payload = await _execute_mml("LST NRDUCELLTRP:;", resolved_names)
     nrducelltrp_dataframe = _records_dataframe(
         nrducelltrp_payload,
         "LST NRDUCELLTRP",
@@ -856,6 +889,7 @@ async def create_cell_summary_nr(
         "records": summary_dataframe.to_dict(orient="records"),
         "count": len(summary_dataframe),
         "errors": _ne_errors(nrcell_payload, nrducell_payload, nrducelltrp_payload),
+        "name_resolution": name_resolution,
     }
 
 
@@ -873,22 +907,43 @@ async def create_cell_summary_nr(
 )
 async def create_cell_summary_umts(
     request: UmtsCellSummaryRequest,
+    http_request: HttpRequest,
     user_id: str = Depends(require_user),
 ):
     """Ubica un NodeB entre las RNC fijas y extrae el estado/configuración de sus celdas UMTS."""
-    dsp_command = f'DSP UCELL:DSPT=BYNODEB,NODEBNAME="{request.nodeb_name}";'
+    resolved_names, name_resolution = await _resolve_node_names(
+        http_request,
+        [request.nodeb_name],
+        target_column="nodeb",
+    )
+    resolution = name_resolution[0]
+    if not resolved_names:
+        if resolution["status"] == "not_found":
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "input": request.nodeb_name,
+                    "error": resolution["error"],
+                    "suggestions": resolution.get("suggestions", []),
+                },
+            )
+        raise HTTPException(status_code=422, detail=resolution["error"])
+
+    nodeb_name = resolved_names[0]
+    dsp_command = f'DSP UCELL:DSPT=BYNODEB,NODEBNAME="{nodeb_name}";'
     dsp_payload = await _execute_mml(dsp_command, _umts_rnc_names())
 
     matched_rnc_names = _successful_ne_names(dsp_payload)
     if not matched_rnc_names:
         return {
-            "nodeb_name": request.nodeb_name,
+            "nodeb_name": nodeb_name,
             "rnc_names_matched": [],
             "pattern": None,
             "commands": [dsp_command],
             "records": [],
             "count": 0,
             "errors": _umts_ne_errors(dsp_payload),
+            "name_resolution": name_resolution,
         }
 
     dsp_dataframe = _records_dataframe(dsp_payload, "DSP UCELL", key_column="Cell ID")[[
@@ -918,11 +973,12 @@ async def create_cell_summary_umts(
     summary_dataframe = summary_dataframe.astype(object).where(summary_dataframe.notna(), None)
 
     return {
-        "nodeb_name": request.nodeb_name,
+        "nodeb_name": nodeb_name,
         "rnc_names_matched": matched_rnc_names,
         "pattern": pattern,
         "commands": [dsp_command, lst_command],
         "records": summary_dataframe.to_dict(orient="records"),
         "count": len(summary_dataframe),
         "errors": _umts_ne_errors(dsp_payload, lst_payload),
+        "name_resolution": name_resolution,
     }

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "cases": [
+    {"input": "LR96M7", "expected": "LR9667"},
+    {"input": "AND0058", "expected": "AN10058"},
+    {"input": "LR1651", "expected": "LR1611"},
+    {"input": "RM03G_235", "expected": "RM_3G_235"},
+    {"input": "OC10198", "expected": "OH10198"},
+    {"input": "BI941O", "expected": "BI9418"},
+    {"input": "ARA_3G_501", "expected": "ARA_3G_001"},
+    {"input": "9M0567", "expected": "RM0567"},
+    {"input": "RM_inS3G_138", "expected": "RM_in_3G_138"},
+    {"input": "LM5457", "expected": "RM5457"}
+  ]
+}

@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.routes.auth import require_user
@@ -20,6 +21,21 @@ class FakeHuaweiClient:
                 request=httpx.Request("POST", "https://huawei.example"),
             )
         )
+
+
+@pytest.fixture(autouse=True)
+def mock_site_directory():
+    async def resolve_as_existing_nodes(names, target_column):
+        return [
+            {"input": name, "resolved": name, "status": "resolved"}
+            for name in names
+        ]
+
+    with patch(
+        "app.api.routes.huawei.resolve_names",
+        new=AsyncMock(side_effect=resolve_as_existing_nodes),
+    ):
+        yield
 
 
 def test_mml_command_preserves_huawei_envelope_and_parses_report():
@@ -70,12 +86,100 @@ def test_mml_command_preserves_huawei_envelope_and_parses_report():
         ],
         "retCode": "90000",
         "retMessage": "Execution succeeded.",
+        "name_resolution": [
+            {"input": "NE-001", "resolved": "NE-001", "status": "resolved"}
+        ],
     }
     client.post.assert_awaited_once_with(
         "/api/rest/mmlManagement/v1/command",
         headers={"X-Auth-Token": "test-token"},
         json={"command": "display version;", "neNames": ["NE-001"]},
     )
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "body", "upstream_call"),
+    [
+        (
+            "/mml/command",
+            {"command": "display version;", "ne_names": ["AN0069", "MBTS-AN0069", "AN0096"]},
+            "command",
+        ),
+        (
+            "/mml/cell-summary-lte",
+            {"ne_names": ["AN0069", "MBTS-AN0069", "AN0096"]},
+            "lte",
+        ),
+        (
+            "/mml/cell-summary-nr",
+            {"ne_names": ["AN0069", "MBTS-AN0069", "AN0096"]},
+            "nr",
+        ),
+        (
+            "/mml/kpis",
+            {"ne_names": ["AN0069", "MBTS-AN0069", "AN0096"]},
+            "kpis",
+        ),
+    ],
+)
+def test_4g_routes_resolve_site_and_direct_node_preserving_mixed_batch(
+    endpoint, body, upstream_call
+):
+    async def resolve_for_test(names, target_column):
+        assert target_column == "nodo"
+        return [
+            {
+                "input": name,
+                "resolved": None if name == "AN0096" else "MBTS-AN0069",
+                "status": "not_found" if name == "AN0096" else "resolved",
+                **({"error": "No se encontró el sitio.", "suggestions": ["AN0069"]} if name == "AN0096" else {}),
+            }
+            for name in names
+        ]
+
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(side_effect=resolve_for_test),
+            ),
+            patch(
+                "app.api.routes.huawei._execute_mml",
+                new=AsyncMock(return_value={"results": []}),
+            ) as execute_mml,
+            patch(
+                "app.api.routes.huawei._create_measurement_task",
+                new=AsyncMock(return_value={"records": []}),
+            ) as create_measurement_task,
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(endpoint, json=body)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    result = response.json()
+    assert [item["input"] for item in result["name_resolution"]] == body["ne_names"]
+    assert [item["status"] for item in result["name_resolution"]] == [
+        "resolved",
+        "resolved",
+        "not_found",
+    ]
+    if upstream_call == "kpis":
+        create_measurement_task.assert_awaited_once_with(["MBTS-AN0069", "MBTS-AN0069"])
+        execute_mml.assert_not_awaited()
+    else:
+        expected_command = {
+            "command": "display version;",
+            "lte": "DSP CELL:;",
+            "nr": "DSP NRCELL:;",
+        }[upstream_call]
+        execute_mml.assert_awaited_once_with(
+            expected_command,
+            ["MBTS-AN0069", "MBTS-AN0069"],
+        )
+        create_measurement_task.assert_not_awaited()
 
 
 def test_mml_command_marks_offline_ne_as_failed_without_parsing_as_mml():
@@ -334,6 +438,9 @@ cell-a  ACTIVE
         ],
         "retCode": "90000",
         "retMessage": "Execution succeeded.",
+        "name_resolution": [
+            {"input": "NE-001", "resolved": "NE-001", "status": "resolved"}
+        ],
     }
 
 
@@ -771,6 +878,9 @@ def test_cell_summary_umts_returns_empty_records_when_no_rnc_matches():
         "errors": [{"ne_name": name, "error": "NodeB is not configured"} for name in [
             "STG03", "STG04", "STG05", "STG06", "ATF02", "CCP2", "PTM01",
         ]],
+        "name_resolution": [
+            {"input": "URM9999", "resolved": "URM9999", "status": "resolved"}
+        ],
     }
     client.post.assert_awaited_once()
 
@@ -827,6 +937,189 @@ Cell ID  Max Transmit Power of Cell  Band Indicator  Downlink UARFCN
     assert body["pattern"] == "URM9999"
     assert body["rnc_names_matched"] == ["STG03"]
     assert body["count"] == 1
+
+
+@pytest.mark.parametrize("input_name", ["AN0069", "UAN0069"])
+def test_umts_resolves_site_and_direct_nodeb_to_canonical_name(input_name):
+    resolved = {
+        "input": input_name,
+        "resolved": "UAN0069",
+        "status": "resolved",
+    }
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(return_value=[resolved]),
+            ) as resolve,
+            patch(
+                "app.api.routes.huawei._execute_mml",
+                new=AsyncMock(return_value={"results": []}),
+            ) as execute_mml,
+            patch("app.api.routes.huawei._umts_rnc_names", return_value=_TEST_RNC_NAMES),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-umts",
+                json={"nodeb_name": input_name},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["nodeb_name"] == "UAN0069"
+    assert response.json()["name_resolution"] == [resolved]
+    resolve.assert_awaited_once_with([input_name], "nodeb")
+    execute_mml.assert_awaited_once_with(
+        'DSP UCELL:DSPT=BYNODEB,NODEBNAME="UAN0069";',
+        _TEST_RNC_NAMES,
+    )
+
+
+@pytest.mark.parametrize(
+    ("resolution", "expected_status"),
+    [
+        (
+            {
+                "input": "AN0096",
+                "resolved": None,
+                "status": "not_found",
+                "error": "No se encontró el sitio.",
+                "suggestions": ["AN0069"],
+            },
+            404,
+        ),
+        (
+            {
+                "input": "AN0070",
+                "resolved": None,
+                "status": "missing_mapping",
+                "error": "El sitio no tiene mapeo para nodeb.",
+            },
+            422,
+        ),
+    ],
+)
+def test_umts_rejects_unknown_site_and_missing_nodeb_mapping(resolution, expected_status):
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(return_value=[resolution]),
+            ),
+            patch("app.api.routes.huawei._execute_mml", new=AsyncMock()) as execute_mml,
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-umts",
+                json={"nodeb_name": resolution["input"]},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == expected_status
+    execute_mml.assert_not_awaited()
+    if expected_status == 404:
+        assert response.json()["detail"]["suggestions"] == ["AN0069"]
+    else:
+        assert "nodeb" in response.json()["detail"].lower()
+
+
+def test_umts_returns_service_unavailable_when_directory_cannot_be_queried():
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(
+                    side_effect=HTTPException(
+                        status_code=503,
+                        detail="El directorio de sitios no está configurado o disponible.",
+                    )
+                ),
+            ),
+            patch("app.api.routes.huawei._execute_mml", new=AsyncMock()) as execute_mml,
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-umts",
+                json={"nodeb_name": "AN0069"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    execute_mml.assert_not_awaited()
+
+
+def test_4g_batch_skips_ambiguous_site_and_keeps_resolved_names():
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(
+                    return_value=[
+                        {"input": "AN0069", "resolved": "MBTS-AN0069", "status": "resolved"},
+                        {
+                            "input": "RM173",
+                            "resolved": None,
+                            "status": "ambiguous_mapping",
+                            "error": "El sitio tiene múltiples mapeos para nodo.",
+                        },
+                    ]
+                ),
+            ),
+            patch(
+                "app.api.routes.huawei._execute_mml",
+                new=AsyncMock(return_value={"results": []}),
+            ) as execute_mml,
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/command",
+                json={"command": "display version;", "ne_names": ["AN0069", "RM173"]},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["name_resolution"][1]["status"] == "ambiguous_mapping"
+    execute_mml.assert_awaited_once_with("display version;", ["MBTS-AN0069"])
+
+
+def test_umts_rejects_ambiguous_nodeb_mapping_without_calling_huawei():
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(
+                    return_value=[
+                        {
+                            "input": "RM173",
+                            "resolved": None,
+                            "status": "ambiguous_mapping",
+                            "error": "El sitio tiene múltiples mapeos para nodeb.",
+                        }
+                    ]
+                ),
+            ),
+            patch("app.api.routes.huawei._execute_mml", new=AsyncMock()) as execute_mml,
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-umts",
+                json={"nodeb_name": "RM173"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert "múltiples" in response.json()["detail"]
+    execute_mml.assert_not_awaited()
 
 
 class FakeHuaweiGetClient:
@@ -1097,7 +1390,10 @@ def test_get_measurement_kpis_sends_fixed_params_and_flattens_result():
                 "Traffic": "25.2",
                 "Throughput": "10",
             }
-        ]
+        ],
+        "name_resolution": [
+            {"input": "MBTS-RM3644", "resolved": "MBTS-RM3644", "status": "resolved"}
+        ],
     }
 
     client.post.assert_awaited_once()
@@ -1162,7 +1458,10 @@ def test_get_measurement_kpis_polls_async_task_and_flattens_merged_result():
                 "Traffic": "41.43",
                 "Throughput": "8.4",
             }
-        ]
+        ],
+        "name_resolution": [
+            {"input": "MBTS-RM3644", "resolved": "MBTS-RM3644", "status": "resolved"}
+        ],
     }
     assert client.get.await_count == 2
     client.get.assert_awaited_with(

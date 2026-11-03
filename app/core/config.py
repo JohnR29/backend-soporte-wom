@@ -28,6 +28,8 @@ class Settings(BaseSettings):
 
     # Auditoría en Postgres; vacío desactiva la auditoría.
     database_url: str | None = None
+    # Directorio externo de sitios; conexión opcional e independiente de auditoría.
+    site_directory_database_url: str | None = None
     audit_max_body_bytes: int = 8192
 
     mml_script_poll_interval_seconds: float = 3.0

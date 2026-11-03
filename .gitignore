@@ -1,12 +1,16 @@
 .venv/
+venv/
 __pycache__/
 *.pyc
+dist/
+*.egg-info/
 .env
 .env.production
 certs/*
 .pytest_cache/
 uvicorn.log
 *.json
+!tests/fixtures/node_resolution_typo_cases.json
 
 # ==============================================================================
 # Spec Kit - Cachés y configuración local

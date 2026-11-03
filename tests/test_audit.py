@@ -1,7 +1,8 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from app.api.routes.auth import require_user
 from app.main import app
 from app.services.audit import redact, valid_ip
 
@@ -45,3 +46,44 @@ def test_middleware_skips_noise_paths():
             client.get(path)
 
     assert records == []
+
+
+def test_middleware_keeps_original_body_and_audits_resolved_node_names():
+    records = []
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.audit_middleware.is_enabled", return_value=True),
+            patch("app.api.audit_middleware.record", side_effect=records.append),
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(
+                    return_value=[
+                        {
+                            "input": "AN0069",
+                            "resolved": "MBTS-AN0069",
+                            "status": "resolved",
+                        }
+                    ]
+                ),
+            ),
+            patch(
+                "app.api.routes.huawei._execute_mml",
+                new=AsyncMock(return_value={"results": []}),
+            ),
+            TestClient(app) as client,
+        ):
+            response = client.post(
+                "/mml/command",
+                json={"command": "display version;", "ne_names": ["AN0069"]},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    entry = records[0]
+    assert entry["request_body"] == {
+        "command": "display version;",
+        "ne_names": ["AN0069"],
+    }
+    assert entry["ne_names"] == ["MBTS-AN0069"]
