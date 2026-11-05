@@ -209,7 +209,8 @@ Invariante: `alarmClearedTime == null` ⇔ `cleared == "Activa"`.
 | AT-01 | Mismo identificador en 3G/4G/5G con directorio simulado | Cada tecnología resuelve con su columna; `name_resolution` correcto |
 | AT-02 | Identificador inexistente, uno y varios nodos, en 3G/4G/5G/KPIs | 200, `NODE_NOT_FOUND`, `suggestions` |
 | AT-03 | NE devuelve "Ne is not connected." (4G/5G) | 200, `NODE_DISCONNECTED`, `records: []` |
-| AT-04 | NodeB 3G desconectado | Pendiente de fixture real (Pendiente 1) |
+| AT-04a | 3G: sitio con `nodeb` en el directorio y todas las RNC responden "not configured" | 200, `NODE_NOT_FOUND`, `records: []` |
+| AT-04b | NodeB 3G desconectado pero configurado | Pendiente de fixture real (Pendiente 1) |
 | AT-05 | Sitio sin mapeo / conectado sin celdas de la tecnología | 200, `TECHNOLOGY_UNAVAILABLE` |
 | AT-06 | 3G: una RNC con celdas y otras con error | `records` completos; sin código de nodo |
 | AT-07 | 4G/5G: lote mixto | `records` de los buenos y `errors` del fallido |

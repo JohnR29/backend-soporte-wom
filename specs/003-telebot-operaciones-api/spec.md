@@ -15,6 +15,8 @@
 - Q: Si el identificador no existe en el directorio, ¿cómo responde `/mml/cell-summary-umts` (hoy HTTP 404)? → A: HTTP 200 con `errors[].code = NODE_NOT_FOUND`, igual que 4G/5G.
 - Q: ¿Cuándo se emite `TECHNOLOGY_UNAVAILABLE`? → A: Cuando el nodo existe pero el directorio no tiene mapeo para esa tecnología, o cuando está conectado y no devuelve celdas/NE de esa tecnología. No se emite si el nodo está desconectado.
 - Q: ¿De dónde salen las cinco alarmas clareadas más recientes? → A: Solo de la consulta actual (`dataType=CURRENT`) ya existente; si no incluye clareadas, el bot no muestra ninguna. No se añade consulta histórica.
+- Q: Si el sitio existe en el directorio con `nodeb` pero ninguna RNC devuelve celdas del NodeB, ¿qué código se emite en 3G? → A: `NODE_NOT_FOUND` (todas las RNC informan que el NodeB no está configurado).
+- Q: Si el identificador se resuelve a un nodo válido pero `/mml/kpis` no devuelve mediciones, ¿qué responde la API? → A: `records: []` y `errors: []`, sin código de nodo.
 
 ## Consumidores y alcance
 
@@ -128,7 +130,7 @@ El bot consulta KPIs enviando solo el nodo; la API devuelve las últimas 24 hora
 - El bot envía a 3G el nombre 4G/5G (p. ej. `MBTS-AIS_3G_001`) y ese valor no está en `nodeb` ni es un sitio: `NODE_NOT_FOUND`. No se infieren ni se quitan prefijos.
 - Directorio de sitios no disponible: error HTTP 503 (error de servidor, no resultado por nodo).
 - Nodo desconectado: `records: []`; si además otros controladores fallan, solo se informa el error del nodo consultado en el código estable.
-- Nodo conectado pero con `records` vacíos en una tecnología: `TECHNOLOGY_UNAVAILABLE`.
+- Nodo conectado pero con `records` vacíos en una tecnología de estado (3G/4G/5G): `TECHNOLOGY_UNAVAILABLE`; en KPIs no se emite error.
 - Alarmas del sitio inexistentes o sin alarmas: `alarms: []`, `count: 0` (no se distingue sitio inexistente de sitio sin alarmas).
 - Más de 500 alarmas: se respeta `limit`/`marker` existentes; el bot usa los 500 solicitados.
 - Orden de `alarms`: no garantizado; el bot ordena clareadas por `alarmClearedTime` descendente.
@@ -148,9 +150,9 @@ El bot consulta KPIs enviando solo el nodo; la API devuelve las últimas 24 hora
 
 - **FR-005**: `errors` MUST ser una lista de objetos con, como mínimo: `code`, `message` (legible, en español), `input` y `ne_name` (valor resuelto o `null`). El campo existente `error` (texto original de Huawei) se conserva por compatibilidad.
 - **FR-006**: Los códigos estables son:
-  - `NODE_NOT_FOUND`: el identificador no existe en el directorio, o Huawei informa que el NE no existe. Incluye `suggestions` cuando las hay.
+  - `NODE_NOT_FOUND`: el identificador no existe en el directorio, o Huawei informa que el NE no existe; en 3G, también cuando el sitio tiene `nodeb` en el directorio pero todas las RNC informan que el NodeB no está configurado. Incluye `suggestions` cuando las hay.
   - `NODE_DISCONNECTED`: el nodo existe pero está desconectado y no entregó datos (en 4G/5G, Huawei responde que el NE no está conectado).
-  - `TECHNOLOGY_UNAVAILABLE`: el nodo existe pero el directorio no tiene mapeo para esa tecnología (`missing_mapping`, `ambiguous_mapping`), o está conectado y no devolvió celdas/NE de esa tecnología. No se emite si el nodo está desconectado.
+  - `TECHNOLOGY_UNAVAILABLE`: el nodo existe pero el directorio no tiene mapeo para esa tecnología (`missing_mapping`, `ambiguous_mapping`), o está conectado y no devolvió celdas/NE de esa tecnología (en 3G, solo si una RNC lo reconoce y no devuelve celdas). No se emite si el nodo está desconectado.
 - **FR-007**: Un error por nodo MUST responder HTTP 200. `/mml/cell-summary-umts` deja de responder 404 para identificador inexistente y usa `NODE_NOT_FOUND`.
 - **FR-008**: Los errores HTTP MUST seguir distinguibles: 401 (token), 422 (esquema), 502/504 (Huawei no completó la comunicación), 503 (directorio no disponible), 400 (solicitud rechazada por Huawei). Estos NO usan los códigos de FR-006.
 - **FR-009**: Otros fallos por nodo no cubiertos por FR-006 MUST seguir apareciendo en `errors` con su `error` original y `code: null`, sin ocultarlos.
@@ -171,7 +173,7 @@ El bot consulta KPIs enviando solo el nodo; la API devuelve las últimas 24 hora
 **KPIs**
 
 - **FR-017**: `POST /mml/kpis` con `ne_names` MUST devolver automáticamente las últimas 24 horas sin aceptar ni requerir `period_start`/`period_end`; cada fila lleva `startTime`.
-- **FR-018**: `/mml/kpis` MUST informar identificadores no resueltos con `errors` según FR-005/FR-006 y conservar `records` de los resueltos; el resto de campos actuales no cambia.
+- **FR-018**: `/mml/kpis` MUST informar identificadores no resueltos con `errors` según FR-005/FR-006 y conservar `records` de los resueltos. Un nodo resuelto sin mediciones devuelve `records: []` y `errors: []`; el resto de campos actuales no cambia.
 
 **Compatibilidad**
 
@@ -207,6 +209,6 @@ El bot consulta KPIs enviando solo el nodo; la API devuelve las últimas 24 hora
 
 ## Pendientes de confirmación (no bloquean el contrato)
 
-1. **Detección de NodeB 3G desconectado**: el repositorio no documenta qué devuelve Huawei (RNC) cuando el NodeB está caído y no entrega celdas. Debe validarse con una captura real o simulada antes de implementar el mapeo a `NODE_DISCONNECTED` y `TECHNOLOGY_UNAVAILABLE` en 3G.
+1. **Detección de NodeB 3G desconectado**: el repositorio no documenta qué devuelve Huawei (RNC) cuando el NodeB está caído pero sigue configurado. Debe validarse con una captura real o simulada antes de implementar el mapeo a `NODE_DISCONNECTED` en 3G. Ya decidido: si todas las RNC informan "not configured", el código es `NODE_NOT_FOUND`.
 2. **Alarmas clareadas en `CURRENT`**: no está confirmado que Huawei las devuelva; si no, el bot no mostrará clareadas (decisión ya aceptada).
 3. **Fallo por nodo en KPIs**: el contrato solo cubre identificadores no resueltos; el comportamiento ante un nodo desconectado en KPIs no está especificado porque la consulta de rendimiento no informa conexión.
