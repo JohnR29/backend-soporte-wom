@@ -24,7 +24,6 @@ _SEVERITY_LABELS = {
     "5": "Indeterminada",
 }
 _ACK_STATE_LABELS = {"0": "No reconocida", "1": "Reconocida"}
-_CLEARED_LABELS = {"0": "Activa", "1": "Limpia"}
 
 _ALARM_RESPONSES = {
     400: {"description": "Parámetros inválidos (dataType/baseObjectInstance/marker rechazados por Huawei)."},
@@ -53,6 +52,7 @@ def _epoch_ms_to_iso(value: str | None) -> str | None:
 
 
 def _simplify_alarm(raw: dict) -> dict:
+    cleared_time = _epoch_ms_to_iso(raw.get("alarmClearedTime"))
     return {
         "alarmId": raw.get("alarmId"),
         "alarmName": raw.get("alarmName"),
@@ -60,8 +60,8 @@ def _simplify_alarm(raw: dict) -> dict:
         "objectInstance": raw.get("objectInstance"),
         "perceivedSeverity": _SEVERITY_LABELS.get(raw.get("perceivedSeverity"), raw.get("perceivedSeverity")),
         "alarmRaisedTime": _epoch_ms_to_iso(raw.get("alarmRaisedTime")),
-        "alarmClearedTime": _epoch_ms_to_iso(raw.get("alarmClearedTime")),
-        "cleared": _CLEARED_LABELS.get(raw.get("cleared"), raw.get("cleared")),
+        "alarmClearedTime": cleared_time,
+        "cleared": "Limpia" if cleared_time is not None else "Activa",
         "ackState": _ACK_STATE_LABELS.get(raw.get("ackState"), raw.get("ackState")),
         "comments": raw.get("comments"),
         "additionalInformation": raw.get("additionalInformation"),

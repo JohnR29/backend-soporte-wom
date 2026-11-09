@@ -48,15 +48,15 @@ No foundational changes are required. Continue to use `app/services/node_resolut
 
 ### Acceptance Tests
 
-- [ ] T001 [US1] Add AT-01 and the 3G/4G/5G state-route cases from AT-02 for technology-specific directory columns, original inputs, suggestions, HTTP 200, and no Huawei call for unresolved names in `tests/test_huawei_route.py`.
-- [ ] T002 [US1] Add AT-03 and the state-route cases from AT-05 for disconnected LTE/NR nodes, missing or ambiguous mappings, and connected nodes without technology cells in `tests/test_huawei_route.py`.
-- [ ] T003 [US1] Add AT-04a, AT-04b, and AT-06 for unconfigured RNCs, all-unavailable versus mixed 3G cells, and valid cells alongside controller failures in `tests/test_huawei_route.py`.
-- [ ] T004 [US1] Add AT-07 and AT-08 for mixed LTE/NR batches and HTTP 400, 401, 422, 502, 503, and 504 responses without stable node error codes in `tests/test_huawei_route.py`.
+- [X] T001 [US1] Add AT-01 and the 3G/4G/5G state-route cases from AT-02 for technology-specific directory columns, original inputs, suggestions, HTTP 200, and no Huawei call for unresolved names in `tests/test_huawei_route.py`.
+- [X] T002 [US1] Add AT-03 and the state-route cases from AT-05 for disconnected LTE/NR nodes, missing or ambiguous mappings, and connected nodes without technology cells in `tests/test_huawei_route.py`.
+- [X] T003 [US1] Add AT-04a, AT-04b, and AT-06 for unconfigured RNCs, all-unavailable versus mixed 3G cells, and valid cells alongside controller failures in `tests/test_huawei_route.py`.
+- [X] T004 [US1] Add AT-07 and AT-08 for mixed LTE/NR batches and HTTP 400, 401, 422, 502, 503, and 504 responses without stable node error codes in `tests/test_huawei_route.py`.
 
 ### Implementation
 
-- [ ] T005 [US1] Implement directory-resolution outcomes, Spanish stable node errors, technology-specific mappings, disconnected LTE/NR handling, and partial batch preservation in `app/api/routes/huawei.py`.
-- [ ] T006 [US1] Implement UMTS not-configured and cell-availability classification while retaining valid cells and other-RNC errors in `app/api/routes/huawei.py`.
+- [X] T005 [US1] Implement directory-resolution outcomes, Spanish stable node errors, technology-specific mappings, disconnected LTE/NR handling, and partial batch preservation in `app/api/routes/huawei.py`.
+- [X] T006 [US1] Implement UMTS not-configured and cell-availability classification while retaining valid cells and other-RNC errors in `app/api/routes/huawei.py`.
 
 **Checkpoint**: AT-01 through AT-08 pass independently; node errors remain HTTP 200 and transport/request errors remain HTTP errors.
 
@@ -70,8 +70,8 @@ No foundational changes are required. Continue to use `app/services/node_resolut
 
 ### Acceptance Tests
 
-- [ ] T007 [US3] Add AT-11 success-schema regression assertions for existing field names and types across state, KPI, and site-alarm responses in `tests/test_huawei_route.py` and `tests/test_alarms_route.py`.
-- [ ] T008 [US3] Add AT-14 coverage using an in-memory sentinel Huawei token and assert it is absent from route responses and captured logs; review test fixtures for real credentials or tokens in `tests/test_huawei_route.py` and `tests/fixtures/`.
+- [X] T007 [US3] Add AT-11 success-schema regression assertions for existing field names and types across state, KPI, and site-alarm responses in `tests/test_huawei_route.py` and `tests/test_alarms_route.py`.
+- [X] T008 [US3] Add AT-14 coverage using an in-memory sentinel Huawei token and assert it is absent from route responses and captured logs; review test fixtures for real credentials or tokens in `tests/test_huawei_route.py` and `tests/fixtures/`.
 
 **Checkpoint**: Compatibility assertions pass, no real secret is added to fixtures or examples, and no task requires a bot-repository change.
 
@@ -85,13 +85,13 @@ No foundational changes are required. Continue to use `app/services/node_resolut
 
 ### Acceptance Tests
 
-- [ ] T009 [P] [US2] Add AT-09 and AT-13 cases for null, present, and contradictory clear fields, `CURRENT`-only queries, existing alarm fields, count, and marker in `tests/test_alarms_route.py`.
-- [ ] T010 [P] [US2] Add AT-10, AT-12, and the KPI case from AT-02 for ignored caller date fields, fixed 24-hour query parameters, `startTime`, unresolved-node errors, preserved measurements, and no error for resolved nodes without measurements in `tests/test_huawei_route.py`.
+- [X] T009 [P] [US2] Add AT-09 and AT-13 cases for null, present, and contradictory clear fields, `CURRENT`-only queries, existing alarm fields, count, and marker in `tests/test_alarms_route.py`.
+- [X] T010 [P] [US2] Add AT-10, AT-12, and the KPI case from AT-02 for ignored caller date fields, fixed 24-hour query parameters, `startTime`, unresolved-node errors, preserved measurements, and no error for resolved nodes without measurements in `tests/test_huawei_route.py`.
 
 ### Implementation
 
-- [ ] T011 [US2] Derive site-alarm `cleared` exclusively from normalized `alarmClearedTime`, preserving the existing `CURRENT` query and response pagination in `app/api/routes/alarms.py`.
-- [ ] T012 [US2] Preserve the fixed latest-24-hour KPI query, ignore request period fields, and return `NODE_NOT_FOUND` only for unresolved names while keeping empty resolved nodes error-free in `app/api/routes/huawei.py`.
+- [X] T011 [US2] Derive site-alarm `cleared` exclusively from normalized `alarmClearedTime`, preserving the existing `CURRENT` query and response pagination in `app/api/routes/alarms.py`.
+- [X] T012 [US2] Preserve the fixed latest-24-hour KPI query, ignore request period fields, and return `NODE_NOT_FOUND` only for unresolved names while keeping empty resolved nodes error-free in `app/api/routes/huawei.py`.
 
 **Checkpoint**: AT-09, AT-10, AT-12, and AT-13 pass; alarm and KPI response fields remain compatible.
 
@@ -101,8 +101,8 @@ No foundational changes are required. Continue to use `app/services/node_resolut
 
 **Purpose**: Validate the complete acceptance suite and backend scope.
 
-- [ ] T013 Run the focused acceptance and resolver suite from `specs/004-implementar-contrato-api/quickstart.md`: `pytest tests/test_huawei_route.py tests/test_alarms_route.py tests/test_node_resolution.py -q`.
-- [ ] T014 Run the full regression suite with `pytest -q` and inspect `git diff --name-only` for changes outside `app/`, `tests/`, or `specs/004-implementar-contrato-api/`, confirming no bot-repository paths or real credentials/tokens.
+- [X] T013 Run the focused acceptance and resolver suite from `specs/004-implementar-contrato-api/quickstart.md`: `pytest tests/test_huawei_route.py tests/test_alarms_route.py tests/test_node_resolution.py -q`.
+- [X] T014 Run the full regression suite with `pytest -q` and inspect `git diff --name-only` for changes outside `app/`, `tests/`, or `specs/004-implementar-contrato-api/`, confirming no bot-repository paths or real credentials/tokens.
 
 ---
 

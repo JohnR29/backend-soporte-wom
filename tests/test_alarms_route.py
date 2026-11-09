@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes.alarms import _HERMES_FILTER, _LICENSE_TRIAL_FILTER, _epoch_ms_to_iso
@@ -185,3 +186,38 @@ def test_hermes_alarms_translates_huawei_error_envelope():
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Invalid filter parameter."
+
+
+@pytest.mark.parametrize(
+    ("cleared_time", "upstream_cleared", "expected_cleared"),
+    [
+        (None, "1", "Activa"),
+        ("0", "1", "Activa"),
+        ("1786552739000", "0", "Limpia"),
+    ],
+)
+def test_site_alarm_cleared_state_comes_only_from_cleared_time(
+    cleared_time, upstream_cleared, expected_cleared
+):
+    client = FakeHuaweiClient(
+        {
+            "alarmInformationList": [
+                {
+                    "alarmId": "1",
+                    "alarmClearedTime": cleared_time,
+                    "cleared": upstream_cleared,
+                }
+            ],
+            "marker": "next-page",
+        }
+    )
+
+    response = _call_alarms_endpoint("/alarms/SITE-1", client, {"limit": 10})
+
+    assert response.status_code == 200
+    alarm = response.json()["alarms"][0]
+    assert alarm["alarmClearedTime"] == _epoch_ms_to_iso(cleared_time)
+    assert alarm["cleared"] == expected_cleared
+    assert response.json()["count"] == 1
+    assert response.json()["marker"] == "next-page"
+    assert client.get.await_args.kwargs["params"]["dataType"] == "CURRENT"

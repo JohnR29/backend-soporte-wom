@@ -448,9 +448,11 @@ async def get_measurement_kpis(
     user_id: str = Depends(require_user),
 ) -> dict:
     resolved_names, name_resolution = await _resolve_node_names(http_request, request.ne_names)
+    errors = _resolution_errors(name_resolution, "KPIs")
     if not resolved_names:
-        return {"records": [], "name_resolution": name_resolution}
+        return {"records": [], "errors": errors, "name_resolution": name_resolution}
     result = await _create_measurement_task(resolved_names)
+    result["errors"] = errors
     result["name_resolution"] = name_resolution
     return result
 
@@ -676,15 +678,123 @@ def _records_dataframe(
     return dataframe
 
 
-def _ne_errors(*payloads: dict) -> list[dict]:
-    """Collect NE-level failures (offline/unknown NEs) so they aren't silently dropped."""
-    errors: dict[str, str] = {}
+def _resolution_errors(name_resolution: list[dict], technology: str) -> list[dict]:
+    errors = []
+    for item in name_resolution:
+        if item["status"] == "not_found":
+            error = {
+                "code": "NODE_NOT_FOUND",
+                "message": f"No se encontró el nodo {item['input']}.",
+                "input": item["input"],
+                "ne_name": None,
+            }
+            if item.get("suggestions"):
+                error["suggestions"] = item["suggestions"]
+            errors.append(error)
+        elif item["status"] in {"missing_mapping", "ambiguous_mapping"}:
+            errors.append(
+                {
+                    "code": "TECHNOLOGY_UNAVAILABLE",
+                    "message": f"El nodo no tiene la tecnología {technology} disponible.",
+                    "input": item["input"],
+                    "ne_name": None,
+                }
+            )
+    return errors
+
+
+def _technology_unavailable_error(item: dict, technology: str) -> dict:
+    return {
+        "code": "TECHNOLOGY_UNAVAILABLE",
+        "message": f"El nodo no tiene la tecnología {technology} disponible.",
+        "input": item["input"],
+        "ne_name": item["resolved"],
+    }
+
+
+def _state_payload_errors(name_resolution: list[dict], *payloads: dict) -> list[dict]:
+    resolved_by_name = {
+        item["resolved"]: item
+        for item in name_resolution
+        if item["status"] == "resolved"
+    }
+    errors = []
+    seen = set()
     for payload in payloads:
         for result in payload.get("results", []):
             report = result.get("report")
-            if isinstance(report, dict) and "error" in report:
-                errors.setdefault(result.get("name"), report["error"])
-    return [{"ne_name": name, "error": error} for name, error in errors.items()]
+            if not isinstance(report, dict) or "error" not in report:
+                continue
+            ne_name = result.get("name")
+            resolution = resolved_by_name.get(ne_name)
+            input_name = resolution["input"] if resolution else ne_name
+            raw_error = str(report["error"])
+            normalized_error = raw_error.lower()
+            if "not connected" in normalized_error or "disconnected" in normalized_error:
+                code = "NODE_DISCONNECTED"
+                message = "Nodo desconectado."
+            elif "not exist" in normalized_error or "no existe" in normalized_error:
+                code = "NODE_NOT_FOUND"
+                message = f"No se encontró el nodo {input_name}."
+            else:
+                code = None
+                message = "Error al consultar el nodo."
+            identity = (input_name, code, raw_error)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            error = {
+                "code": code,
+                "message": message,
+                "input": input_name,
+                "ne_name": ne_name,
+                "error": raw_error,
+            }
+            errors.append(error)
+    return errors
+
+
+def _technology_unavailable_errors(
+    name_resolution: list[dict],
+    technology: str,
+    record_names: set[str],
+    *payloads: dict,
+) -> list[dict]:
+    failed_names = {
+        result.get("name")
+        for payload in payloads
+        for result in payload.get("results", [])
+        if isinstance(result.get("report"), dict) and "error" in result["report"]
+    }
+    return [
+        _technology_unavailable_error(item, technology)
+        for item in name_resolution
+        if item["status"] == "resolved"
+        and item["resolved"] not in record_names
+        and item["resolved"] not in failed_names
+    ]
+
+
+def _umts_controller_errors(
+    input_name: str,
+    *payloads: dict,
+) -> list[dict]:
+    errors = []
+    for payload in payloads:
+        for result in payload.get("results", []):
+            report = result.get("report")
+            if not isinstance(report, dict) or "error" not in report:
+                continue
+            errors.append(
+                {
+                    "code": None,
+                    "message": "Error en otro controlador.",
+                    "input": input_name,
+                    "ne_name": result.get("name"),
+                    "error": str(result.get("result", report["error"])),
+                }
+            )
+    return errors
 
 
 def _umts_rnc_names() -> list[str]:
@@ -699,17 +809,6 @@ def _successful_ne_names(payload: dict) -> list[str]:
         for result in payload.get("results", [])
         if isinstance(result.get("report"), dict) and "error" not in result["report"]
     ]
-
-
-def _umts_ne_errors(*payloads: dict) -> list[dict]:
-    """Like _ne_errors but surfaces Huawei's plain-text 'result' (e.g. 'NodeB is not configured')."""
-    errors: dict[str, str] = {}
-    for payload in payloads:
-        for result in payload.get("results", []):
-            report = result.get("report")
-            if isinstance(report, dict) and "error" in report:
-                errors.setdefault(result.get("name"), result.get("result", report["error"]))
-    return [{"ne_name": name, "error": error} for name, error in errors.items()]
 
 
 def _common_cell_name_pattern(cell_names: list[str]) -> str:
@@ -766,11 +865,18 @@ async def create_cell_summary(
     dsp_payload = await _execute_mml("DSP CELL:;", resolved_names) if resolved_names else {"results": []}
     dsp_dataframe = _records_dataframe(dsp_payload, "DSP CELL", empty_columns=dsp_columns)[dsp_columns]
     if dsp_dataframe.empty:
+        errors = _resolution_errors(name_resolution, "4G")
+        errors.extend(_state_payload_errors(name_resolution, dsp_payload))
+        errors.extend(
+            _technology_unavailable_errors(
+                name_resolution, "4G", set(), dsp_payload
+            )
+        )
         return {
             "commands": ["DSP CELL:;"],
             "records": [],
             "count": 0,
-            "errors": _ne_errors(dsp_payload),
+            "errors": errors,
             "name_resolution": name_resolution,
         }
 
@@ -790,12 +896,20 @@ async def create_cell_summary(
         validate="one_to_one",
     )
     summary_dataframe = summary_dataframe.astype(object).where(summary_dataframe.notna(), None)
+    record_names = set(summary_dataframe["ne_name"].dropna().tolist())
+    errors = _resolution_errors(name_resolution, "4G")
+    errors.extend(_state_payload_errors(name_resolution, dsp_payload, lst_payload))
+    errors.extend(
+        _technology_unavailable_errors(
+            name_resolution, "4G", record_names, dsp_payload, lst_payload
+        )
+    )
 
     return {
         "commands": ["DSP CELL:;", "LST CELL:;"],
         "records": summary_dataframe.to_dict(orient="records"),
         "count": len(summary_dataframe),
-        "errors": _ne_errors(dsp_payload, lst_payload),
+        "errors": errors,
         "name_resolution": name_resolution,
     }
 
@@ -833,11 +947,18 @@ async def create_cell_summary_nr(
         empty_columns=nrcell_columns,
     )[nrcell_columns]
     if nrcell_dataframe.empty:
+        errors = _resolution_errors(name_resolution, "5G")
+        errors.extend(_state_payload_errors(name_resolution, nrcell_payload))
+        errors.extend(
+            _technology_unavailable_errors(
+                name_resolution, "5G", set(), nrcell_payload
+            )
+        )
         return {
             "commands": ["DSP NRCELL:;"],
             "records": [],
             "count": 0,
-            "errors": _ne_errors(nrcell_payload),
+            "errors": errors,
             "name_resolution": name_resolution,
         }
 
@@ -883,12 +1004,29 @@ async def create_cell_summary_nr(
         validate="many_to_one",
     ).drop(columns="NR DU Cell ID")
     summary_dataframe = summary_dataframe.astype(object).where(summary_dataframe.notna(), None)
+    record_names = set(summary_dataframe["ne_name"].dropna().tolist())
+    errors = _resolution_errors(name_resolution, "5G")
+    errors.extend(
+        _state_payload_errors(
+            name_resolution, nrcell_payload, nrducell_payload, nrducelltrp_payload
+        )
+    )
+    errors.extend(
+        _technology_unavailable_errors(
+            name_resolution,
+            "5G",
+            record_names,
+            nrcell_payload,
+            nrducell_payload,
+            nrducelltrp_payload,
+        )
+    )
 
     return {
         "commands": ["DSP NRCELL:;", "LST NRDUCELL:;", "LST NRDUCELLTRP:;"],
         "records": summary_dataframe.to_dict(orient="records"),
         "count": len(summary_dataframe),
-        "errors": _ne_errors(nrcell_payload, nrducell_payload, nrducelltrp_payload),
+        "errors": errors,
         "name_resolution": name_resolution,
     }
 
@@ -918,16 +1056,16 @@ async def create_cell_summary_umts(
     )
     resolution = name_resolution[0]
     if not resolved_names:
-        if resolution["status"] == "not_found":
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "input": request.nodeb_name,
-                    "error": resolution["error"],
-                    "suggestions": resolution.get("suggestions", []),
-                },
-            )
-        raise HTTPException(status_code=422, detail=resolution["error"])
+        return {
+            "nodeb_name": request.nodeb_name,
+            "rnc_names_matched": [],
+            "pattern": None,
+            "commands": [],
+            "records": [],
+            "count": 0,
+            "errors": _resolution_errors(name_resolution, "3G"),
+            "name_resolution": name_resolution,
+        }
 
     nodeb_name = resolved_names[0]
     dsp_command = f'DSP UCELL:DSPT=BYNODEB,NODEBNAME="{nodeb_name}";'
@@ -935,6 +1073,25 @@ async def create_cell_summary_umts(
 
     matched_rnc_names = _successful_ne_names(dsp_payload)
     if not matched_rnc_names:
+        controller_errors = _umts_controller_errors(request.nodeb_name, dsp_payload)
+        raw_errors = [
+            result.get("report", {}).get("error", "")
+            for result in dsp_payload.get("results", [])
+            if isinstance(result.get("report"), dict)
+            and "error" in result["report"]
+        ]
+        if raw_errors and all("not configured" in error.lower() for error in raw_errors):
+            errors = [
+                {
+                    "code": "NODE_NOT_FOUND",
+                    "message": f"No se encontró el nodo {request.nodeb_name}.",
+                    "input": request.nodeb_name,
+                    "ne_name": nodeb_name,
+                    "error": raw_errors[0],
+                }
+            ]
+        else:
+            errors = controller_errors
         return {
             "nodeb_name": nodeb_name,
             "rnc_names_matched": [],
@@ -942,7 +1099,7 @@ async def create_cell_summary_umts(
             "commands": [dsp_command],
             "records": [],
             "count": 0,
-            "errors": _umts_ne_errors(dsp_payload),
+            "errors": errors,
             "name_resolution": name_resolution,
         }
 
@@ -971,6 +1128,20 @@ async def create_cell_summary_umts(
         validate="one_to_one",
     )
     summary_dataframe = summary_dataframe.astype(object).where(summary_dataframe.notna(), None)
+    errors = _umts_controller_errors(request.nodeb_name, dsp_payload, lst_payload)
+    if not summary_dataframe.empty and summary_dataframe["Operation state"].map(
+        lambda value: str(value).strip().lower() == "unavailable"
+    ).all():
+        errors.append(
+            {
+                "code": "NODE_DISCONNECTED",
+                "message": "Nodo desconectado.",
+                "input": request.nodeb_name,
+                "ne_name": nodeb_name,
+            }
+        )
+    if summary_dataframe.empty and not errors:
+        errors.append(_technology_unavailable_error(resolution, "3G"))
 
     return {
         "nodeb_name": nodeb_name,
@@ -979,6 +1150,6 @@ async def create_cell_summary_umts(
         "commands": [dsp_command, lst_command],
         "records": summary_dataframe.to_dict(orient="records"),
         "count": len(summary_dataframe),
-        "errors": _umts_ne_errors(dsp_payload, lst_payload),
+        "errors": errors,
         "name_resolution": name_resolution,
     }

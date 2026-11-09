@@ -504,6 +504,12 @@ Local Cell ID  Frequency band  Downlink EARFCN
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"commands", "records", "count", "errors", "name_resolution"}
+    assert isinstance(body["commands"], list)
+    assert isinstance(body["count"], int)
+    assert isinstance(body["errors"], list)
+    assert isinstance(body["name_resolution"], list)
     assert response.json()["records"] == [
         {
             "ne_name": "NE-001",
@@ -615,7 +621,15 @@ Local Cell ID  Frequency band  Downlink EARFCN
     assert response.status_code == 200
     body = response.json()
     assert [record["ne_name"] for record in body["records"]] == ["NE-001"]
-    assert body["errors"] == [{"ne_name": "NE-OFFLINE", "error": "Ne is not connected."}]
+    assert body["errors"] == [
+        {
+            "code": "NODE_DISCONNECTED",
+            "message": "Nodo desconectado.",
+            "input": "NE-OFFLINE",
+            "ne_name": "NE-OFFLINE",
+            "error": "Ne is not connected.",
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -660,7 +674,15 @@ def test_cell_summary_single_offline_ne_returns_200_with_errors(endpoint, comman
     assert body["commands"] == commands
     assert body["records"] == []
     assert body["count"] == 0
-    assert body["errors"] == [{"ne_name": "NE-OFFLINE", "error": "Ne is not connected."}]
+    assert body["errors"] == [
+        {
+            "code": "NODE_DISCONNECTED",
+            "message": "Nodo desconectado.",
+            "input": "NE-OFFLINE",
+            "ne_name": "NE-OFFLINE",
+            "error": "Ne is not connected.",
+        }
+    ]
 
 
 def test_nr_cell_summary_joins_three_commands_by_node_and_cell_id():
@@ -732,7 +754,11 @@ NR DU Cell ID  Max Transmit Power(0.1dBm)
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    records = response.json()["records"]
+    body = response.json()
+    assert set(body) == {"commands", "records", "count", "errors", "name_resolution"}
+    assert isinstance(body["count"], int)
+    assert isinstance(body["errors"], list)
+    records = body["records"]
     assert records[0]["ne_name"] == "NE-001"
     assert records[0]["NR Cell ID"] == "1"
     assert records[0]["Frequency Band"] == "n78"
@@ -819,7 +845,13 @@ Cell ID  Max Transmit Power of Cell  Band Indicator  Downlink UARFCN
     assert body["pattern"] == "URM3644"
     assert body["count"] == 3
     assert body["errors"] == [
-        {"ne_name": name, "error": "NodeB is not configured"}
+        {
+            "code": None,
+            "message": "Error en otro controlador.",
+            "input": "URM3644",
+            "ne_name": name,
+            "error": "NodeB is not configured",
+        }
         for name in ["STG04", "STG05", "STG06", "ATF02", "CCP2", "PTM01"]
     ]
     assert body["records"][0] == {
@@ -875,9 +907,15 @@ def test_cell_summary_umts_returns_empty_records_when_no_rnc_matches():
         "commands": ['DSP UCELL:DSPT=BYNODEB,NODEBNAME="URM9999";'],
         "records": [],
         "count": 0,
-        "errors": [{"ne_name": name, "error": "NodeB is not configured"} for name in [
-            "STG03", "STG04", "STG05", "STG06", "ATF02", "CCP2", "PTM01",
-        ]],
+        "errors": [
+            {
+                "code": "NODE_NOT_FOUND",
+                "message": "No se encontró el nodo URM9999.",
+                "input": "URM9999",
+                "ne_name": "URM9999",
+                "error": "RETCODE = 235308841  NodeB is not configured",
+            }
+        ],
         "name_resolution": [
             {"input": "URM9999", "resolved": "URM9999", "status": "resolved"}
         ],
@@ -978,7 +1016,7 @@ def test_umts_resolves_site_and_direct_nodeb_to_canonical_name(input_name):
 
 
 @pytest.mark.parametrize(
-    ("resolution", "expected_status"),
+    ("resolution", "expected_code"),
     [
         (
             {
@@ -988,7 +1026,7 @@ def test_umts_resolves_site_and_direct_nodeb_to_canonical_name(input_name):
                 "error": "No se encontró el sitio.",
                 "suggestions": ["AN0069"],
             },
-            404,
+            "NODE_NOT_FOUND",
         ),
         (
             {
@@ -997,11 +1035,13 @@ def test_umts_resolves_site_and_direct_nodeb_to_canonical_name(input_name):
                 "status": "missing_mapping",
                 "error": "El sitio no tiene mapeo para nodeb.",
             },
-            422,
+            "TECHNOLOGY_UNAVAILABLE",
         ),
     ],
 )
-def test_umts_rejects_unknown_site_and_missing_nodeb_mapping(resolution, expected_status):
+def test_umts_returns_stable_resolution_errors_without_calling_huawei(
+    resolution, expected_code
+):
     app.dependency_overrides[require_user] = lambda: "operator-1"
     try:
         with (
@@ -1019,12 +1059,66 @@ def test_umts_rejects_unknown_site_and_missing_nodeb_mapping(resolution, expecte
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == expected_status
+    assert response.status_code == 200
     execute_mml.assert_not_awaited()
-    if expected_status == 404:
-        assert response.json()["detail"]["suggestions"] == ["AN0069"]
+    error = response.json()["errors"][0]
+    assert error["code"] == expected_code
+    assert error["input"] == resolution["input"]
+    if expected_code == "NODE_NOT_FOUND":
+        assert error["suggestions"] == ["AN0069"]
     else:
-        assert "nodeb" in response.json()["detail"].lower()
+        assert error["ne_name"] is None
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "body", "target_column"),
+    [
+        ("/mml/cell-summary-umts", {"nodeb_name": "AN0096"}, "nodeb"),
+        ("/mml/cell-summary-lte", {"ne_names": ["AN0096"]}, "nodo"),
+        ("/mml/cell-summary-nr", {"ne_names": ["AN0096"]}, "nodo"),
+    ],
+)
+def test_state_routes_return_node_not_found_for_unresolved_names(
+    endpoint, body, target_column
+):
+    input_name = body.get("nodeb_name") or body["ne_names"][0]
+    resolution = {
+        "input": input_name,
+        "resolved": None,
+        "status": "not_found",
+        "error": "No se encontró el sitio.",
+        "suggestions": ["AN0069"],
+    }
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(return_value=[resolution]),
+            ) as resolve,
+            patch("app.api.routes.huawei._execute_mml", new=AsyncMock()) as execute_mml,
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(endpoint, json=body)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["records"] == []
+    assert result["count"] == 0
+    assert result["name_resolution"] == [resolution]
+    assert result["errors"] == [
+        {
+            "code": "NODE_NOT_FOUND",
+            "message": f"No se encontró el nodo {input_name}.",
+            "input": input_name,
+            "ne_name": None,
+            "suggestions": ["AN0069"],
+        }
+    ]
+    resolve.assert_awaited_once_with([input_name], target_column)
+    execute_mml.assert_not_awaited()
 
 
 def test_umts_returns_service_unavailable_when_directory_cannot_be_queried():
@@ -1117,8 +1211,8 @@ def test_umts_rejects_ambiguous_nodeb_mapping_without_calling_huawei():
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 422
-    assert "múltiples" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["errors"][0]["code"] == "TECHNOLOGY_UNAVAILABLE"
     execute_mml.assert_not_awaited()
 
 
@@ -1245,7 +1339,7 @@ def test_get_site_alarms_forwards_marker_and_falls_back_on_unknown_codes():
     body = response.json()
     assert body["marker"] == "next-page-token"
     assert body["alarms"][0]["perceivedSeverity"] == "9"
-    assert body["alarms"][0]["cleared"] == "9"
+    assert body["alarms"][0]["cleared"] == "Activa"
     assert body["alarms"][0]["ackState"] == "9"
     assert body["alarms"][0]["alarmClearedTime"] is None
     client.get.assert_awaited_once_with(
@@ -1394,6 +1488,7 @@ def test_get_measurement_kpis_sends_fixed_params_and_flattens_result():
         "name_resolution": [
             {"input": "MBTS-RM3644", "resolved": "MBTS-RM3644", "status": "resolved"}
         ],
+        "errors": [],
     }
 
     client.post.assert_awaited_once()
@@ -1462,6 +1557,7 @@ def test_get_measurement_kpis_polls_async_task_and_flattens_merged_result():
         "name_resolution": [
             {"input": "MBTS-RM3644", "resolved": "MBTS-RM3644", "status": "resolved"}
         ],
+        "errors": [],
     }
     assert client.get.await_count == 2
     client.get.assert_awaited_with(
@@ -1572,3 +1668,464 @@ def test_mml_scripts_txt_and_zip_downloads():
     archive = zipfile.ZipFile(io.BytesIO(post("zip").content))
     assert archive.namelist() == ["01_a_resultado.txt", "02_b_resultado.txt"]
     assert archive.read("01_a_resultado.txt") == b"result of id-a"
+
+
+def test_kpis_return_unresolved_errors_and_preserve_resolved_measurements():
+    resolutions = [
+        {
+            "input": "UNKNOWN",
+            "resolved": None,
+            "status": "not_found",
+            "error": "No se encontró el sitio.",
+            "suggestions": ["SITE-1"],
+        },
+        {"input": "SITE-1", "resolved": "ENB-1", "status": "resolved"},
+        {"input": "SITE-2", "resolved": "ENB-2", "status": "resolved"},
+    ]
+    records = [{"neName": "ENB-1", "startTime": "2026-11-09T10:00:00"}]
+    create_measurement_task = AsyncMock(return_value={"records": records})
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(return_value=resolutions),
+            ),
+            patch(
+                "app.api.routes.huawei._create_measurement_task",
+                new=create_measurement_task,
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/kpis",
+                json={
+                    "ne_names": ["UNKNOWN", "SITE-1", "SITE-2"],
+                    "period_start": "2000-01-01",
+                    "period_end": "2000-01-02",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["records"] == records
+    assert body["name_resolution"] == resolutions
+    assert body["errors"] == [
+        {
+            "code": "NODE_NOT_FOUND",
+            "message": "No se encontró el nodo UNKNOWN.",
+            "input": "UNKNOWN",
+            "ne_name": None,
+            "suggestions": ["SITE-1"],
+        }
+    ]
+    create_measurement_task.assert_awaited_once_with(["ENB-1", "ENB-2"])
+
+
+def test_kpis_ignore_caller_period_and_keep_empty_resolved_nodes_error_free():
+    client = FakeHuaweiClient({"result": [], "retCode": "90000"})
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei._last_24h_window",
+                return_value=("2026-11-08T00:00:00Z", "2026-11-09T00:00:00Z"),
+            ),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/kpis",
+                json={
+                    "ne_names": ["ENB-1"],
+                    "period_start": "2000-01-01T00:00:00Z",
+                    "period_end": "2000-01-02T00:00:00Z",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["records"] == []
+    assert response.json()["errors"] == []
+    query = client.post.await_args.kwargs["json"]
+    assert query["startTime"] == "2026-11-08T00:00:00Z"
+    assert query["endTime"] == "2026-11-09T00:00:00Z"
+    assert "period_start" not in query
+    assert "period_end" not in query
+
+
+def test_kpis_return_errors_without_calling_huawei_when_all_names_are_unresolved():
+    resolution = {
+        "input": "UNKNOWN",
+        "resolved": None,
+        "status": "not_found",
+        "error": "No se encontró el sitio.",
+        "suggestions": [],
+    }
+    create_measurement_task = AsyncMock()
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(return_value=[resolution]),
+            ),
+            patch(
+                "app.api.routes.huawei._create_measurement_task",
+                new=create_measurement_task,
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post("/mml/kpis", json={"ne_names": ["UNKNOWN"]})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["records"] == []
+    assert response.json()["errors"][0]["code"] == "NODE_NOT_FOUND"
+    create_measurement_task.assert_not_awaited()
+
+
+def test_kpi_response_and_logs_do_not_expose_huawei_token(caplog):
+    sentinel_token = "IN_MEMORY_HUAWEI_TOKEN_SENTINEL"
+    client = FakeHuaweiClient({"result": [], "retCode": "90000"})
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei.get_client", return_value=client),
+            patch(
+                "app.api.routes.huawei.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": sentinel_token}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post("/mml/kpis", json={"ne_names": ["ENB-1"]})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert sentinel_token not in response.text
+    assert sentinel_token not in caplog.text
+
+
+def test_nr_mixed_batch_preserves_valid_records_and_classifies_disconnected_node():
+    payloads = {
+        "DSP NRCELL:;": {
+            "results": [
+                {
+                    "name": "NE-OK",
+                    "report": {
+                        "records": [
+                            {
+                                "NR Cell ID": "1",
+                                "Cell Name": "nr-cell-1",
+                                "Cell Available State": "Available",
+                            }
+                        ]
+                    },
+                },
+                {"name": "NE-OFFLINE", "report": {"error": "Ne is not connected."}},
+            ]
+        },
+        "LST NRDUCELL:;": {
+            "results": [
+                {
+                    "name": "NE-OK",
+                    "report": {
+                        "records": [
+                            {"Cell ID": "1", "Frequency Band": "n78", "Downlink NARFCN": "640000"}
+                        ]
+                    },
+                },
+                {"name": "NE-OFFLINE", "report": {"error": "Ne is not connected."}},
+            ]
+        },
+        "LST NRDUCELLTRP:;": {
+            "results": [
+                {
+                    "name": "NE-OK",
+                    "report": {
+                        "records": [
+                            {"NR DU Cell ID": "1", "Max Transmit Power(0.1dBm)": "320"}
+                        ]
+                    },
+                },
+                {"name": "NE-OFFLINE", "report": {"error": "Ne is not connected."}},
+            ]
+        },
+    }
+    execute_mml = AsyncMock(side_effect=lambda command, names: payloads[command])
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch("app.api.routes.huawei._execute_mml", new=execute_mml),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-nr",
+                json={"ne_names": ["NE-OK", "NE-OFFLINE"]},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [record["ne_name"] for record in body["records"]] == ["NE-OK"]
+    assert body["errors"] == [
+        {
+            "code": "NODE_DISCONNECTED",
+            "message": "Nodo desconectado.",
+            "input": "NE-OFFLINE",
+            "ne_name": "NE-OFFLINE",
+            "error": "Ne is not connected.",
+        }
+    ]
+
+
+@pytest.mark.parametrize("error_status", [400, 401, 422, 502, 503, 504])
+def test_http_failures_do_not_return_node_error_codes(error_status):
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with TestClient(app) as test_client:
+            if error_status == 401:
+                def reject_user():
+                    raise HTTPException(status_code=401, detail="Unauthorized")
+
+                app.dependency_overrides[require_user] = reject_user
+                response = test_client.post(
+                    "/mml/cell-summary-lte", json={"ne_names": ["NE-1"]}
+                )
+            elif error_status == 422:
+                response = test_client.post("/mml/cell-summary-lte", json={})
+            elif error_status == 503:
+                with patch(
+                    "app.api.routes.huawei.resolve_names",
+                    new=AsyncMock(
+                        side_effect=HTTPException(status_code=503, detail="Directory unavailable")
+                    ),
+                ):
+                    response = test_client.post(
+                        "/mml/cell-summary-lte", json={"ne_names": ["NE-1"]}
+                    )
+            else:
+                with patch(
+                    "app.api.routes.huawei._execute_mml",
+                    new=AsyncMock(
+                        side_effect=HTTPException(
+                            status_code=error_status, detail="Upstream failure"
+                        )
+                    ),
+                ):
+                    response = test_client.post(
+                        "/mml/cell-summary-lte", json={"ne_names": ["NE-1"]}
+                    )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == error_status
+    assert "errors" not in response.json()
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "body", "target_column", "canonical_name", "command"),
+    [
+        (
+            "/mml/cell-summary-umts",
+            {"nodeb_name": "SITE-1"},
+            "nodeb",
+            "NODEB-1",
+            'DSP UCELL:DSPT=BYNODEB,NODEBNAME="NODEB-1";',
+        ),
+        (
+            "/mml/cell-summary-lte",
+            {"ne_names": ["SITE-1"]},
+            "nodo",
+            "ENB-1",
+            "DSP CELL:;",
+        ),
+        (
+            "/mml/cell-summary-nr",
+            {"ne_names": ["SITE-1"]},
+            "nodo",
+            "GNB-1",
+            "DSP NRCELL:;",
+        ),
+    ],
+)
+def test_state_routes_resolve_using_technology_specific_directory_columns(
+    endpoint, body, target_column, canonical_name, command
+):
+    input_name = body.get("nodeb_name") or body["ne_names"][0]
+    resolution = {
+        "input": input_name,
+        "resolved": canonical_name,
+        "status": "resolved",
+    }
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(return_value=[resolution]),
+            ) as resolve,
+            patch(
+                "app.api.routes.huawei._execute_mml",
+                new=AsyncMock(return_value={"results": []}),
+            ) as execute_mml,
+            patch("app.api.routes.huawei._umts_rnc_names", return_value=_TEST_RNC_NAMES),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(endpoint, json=body)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["name_resolution"] == [resolution]
+    resolve.assert_awaited_once_with([input_name], target_column)
+    if target_column == "nodeb":
+        execute_mml.assert_awaited_once_with(command, _TEST_RNC_NAMES)
+        assert response.json()["nodeb_name"] == canonical_name
+    else:
+        execute_mml.assert_awaited_once_with(command, [canonical_name])
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "body", "status_value", "target_column"),
+    [
+        ("/mml/cell-summary-umts", {"nodeb_name": "SITE-1"}, "missing_mapping", "nodeb"),
+        ("/mml/cell-summary-lte", {"ne_names": ["SITE-1"]}, "ambiguous_mapping", "nodo"),
+        ("/mml/cell-summary-nr", {"ne_names": ["SITE-1"]}, "missing_mapping", "nodo"),
+    ],
+)
+def test_state_routes_classify_unusable_mappings_without_calling_huawei(
+    endpoint, body, status_value, target_column
+):
+    input_name = body.get("nodeb_name") or body["ne_names"][0]
+    resolution = {
+        "input": input_name,
+        "resolved": None,
+        "status": status_value,
+        "error": f"El sitio no tiene mapeo para {target_column}.",
+    }
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(return_value=[resolution]),
+            ),
+            patch("app.api.routes.huawei._execute_mml", new=AsyncMock()) as execute_mml,
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(endpoint, json=body)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    error = response.json()["errors"][0]
+    assert error["code"] == "TECHNOLOGY_UNAVAILABLE"
+    assert error["input"] == input_name
+    assert error["ne_name"] is None
+    execute_mml.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "technology"),
+    [("/mml/cell-summary-lte", "4G"), ("/mml/cell-summary-nr", "5G")],
+)
+def test_state_routes_classify_disconnected_and_empty_connected_nodes(endpoint, technology):
+    for report, expected_code in [
+        ({"error": "Ne is not connected."}, "NODE_DISCONNECTED"),
+        ({"records": []}, "TECHNOLOGY_UNAVAILABLE"),
+    ]:
+        app.dependency_overrides[require_user] = lambda: "operator-1"
+        try:
+            with (
+                patch(
+                    "app.api.routes.huawei._execute_mml",
+                    new=AsyncMock(
+                        return_value={"results": [{"name": "NE-1", "report": report}]}
+                    ),
+                ),
+                TestClient(app) as test_client,
+            ):
+                response = test_client.post(endpoint, json={"ne_names": ["NE-1"]})
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["records"] == []
+        assert body["errors"][0]["code"] == expected_code
+        assert body["errors"][0]["message"] == (
+            "Nodo desconectado."
+            if expected_code == "NODE_DISCONNECTED"
+            else f"El nodo no tiene la tecnología {technology} disponible."
+        )
+
+
+@pytest.mark.parametrize(
+    ("states", "expected_codes"),
+    [
+        (["Unavailable", "Unavailable"], ["NODE_DISCONNECTED"]),
+        (["Unavailable", "Available"], []),
+    ],
+)
+def test_umts_unavailable_cells_are_retained_and_only_all_unavailable_is_disconnected(
+    states, expected_codes
+):
+    dsp_records = [
+        {
+            "Cell ID": str(index),
+            "Cell name": f"NODEB-1_{index}",
+            "Operation state": state,
+        }
+        for index, state in enumerate(states, start=1)
+    ]
+    lst_records = [
+        {
+            "Cell ID": str(index),
+            "Max Transmit Power of Cell": "430",
+            "Band Indicator": "BAND1",
+            "Downlink UARFCN": "10787",
+        }
+        for index in range(1, len(states) + 1)
+    ]
+    execute_mml = AsyncMock(
+        side_effect=[
+            {"results": [{"name": "RNC-1", "report": {"records": dsp_records}}]},
+            {"results": [{"name": "RNC-1", "report": {"records": lst_records}}]},
+        ]
+    )
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei.resolve_names",
+                new=AsyncMock(
+                    return_value=[
+                        {"input": "SITE-1", "resolved": "NODEB-1", "status": "resolved"}
+                    ]
+                ),
+            ),
+            patch("app.api.routes.huawei._execute_mml", new=execute_mml),
+            patch("app.api.routes.huawei._umts_rnc_names", return_value=["RNC-1"]),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-umts", json={"nodeb_name": "SITE-1"}
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["records"]) == len(states)
+    assert [error["code"] for error in body["errors"]] == expected_codes
