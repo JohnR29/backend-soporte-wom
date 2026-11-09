@@ -27,7 +27,7 @@ Matching trims external whitespace and ignores case. Resolution uses `nodeb` for
 | `errors` | array of Node Error | Per-node or per-controller errors; non-node errors retain their source text and use `code: null`. |
 | `name_resolution` | array of Name Resolution | One resolution result per requested identifier. |
 
-An error for a node is returned with HTTP 200. If a node produces records, do not emit a node-level failure for it. HTTP-level failures remain distinct and do not use the stable node error codes.
+An error for a node is returned with HTTP 200. Preserve valid records when a node-level error is also reported. For 3G, all returned cells with `Operation state = "Unavailable"` produce `NODE_DISCONNECTED` alongside the preserved records; mixed availability does not. HTTP-level failures remain distinct and do not use the stable node error codes.
 
 ## Node Error
 
@@ -36,14 +36,14 @@ An error for a node is returned with HTTP 200. If a node produces records, do no
 | `code` | string or null | `NODE_NOT_FOUND`, `NODE_DISCONNECTED`, `TECHNOLOGY_UNAVAILABLE`, or null for other per-node/controller failures. |
 | `message` | string | Readable Spanish text suitable for the consumer. |
 | `input` | string | Original identifier from the request. |
-| `ne_name` | string or null | Resolved node value, if available. |
+| `ne_name` | string or null | Resolved node value, if available; controller name for an existing per-controller source error. |
 | `error` | string, optional | Original Huawei/source error retained for compatibility. |
 | `suggestions` | array of strings, optional | Suggestions when the code is `NODE_NOT_FOUND` and candidates exist. |
 
 Stable code semantics:
 
 - `NODE_NOT_FOUND`: identifier absent from the directory; Huawei says the NE does not exist; or every RNC reports that a directory-mapped 3G NodeB is not configured.
-- `NODE_DISCONNECTED`: existing node is disconnected and supplied no data. Do not infer this for 3G until its Huawei response is evidenced; do not infer it for KPIs from empty measurements.
+- `NODE_DISCONNECTED`: in 4G/5G, Huawei reports an existing NE is not connected and supplied no data. For 3G, all returned cells have `Operation state = "Unavailable"`; retain those records and include the node error. Mixed cell availability does not produce this code. Do not infer it for KPIs from empty measurements.
 - `TECHNOLOGY_UNAVAILABLE`: mapping is missing/ambiguous, or a connected node returns no cells for the requested state technology. Do not emit it when the node is disconnected.
 
 ## Alarm

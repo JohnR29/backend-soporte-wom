@@ -32,4 +32,4 @@
 ## Notes
 
 - Esta feature es un contrato de API: los nombres de endpoints, campos y códigos son parte del requisito, no detalles de implementación.
-- Pendientes no bloqueantes registrados en la spec: detección de NodeB 3G desconectado, presencia de clareadas en `CURRENT` y fallo por nodo en KPIs.
+- Pendientes no bloqueantes registrados en la spec: presencia de alarmas clareadas en `CURRENT` y comportamiento de nodo desconectado en KPIs.

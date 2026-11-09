@@ -18,7 +18,7 @@ description: "Task list for the Telebot Operaciones API contract"
 
 **Purpose**: Confirm the feature artifacts and preserve the agreed documentation-only boundary.
 
-- [ ] T001 Confirm the documentation-only scope, existing endpoint owners, and artifact paths in `specs/003-telebot-operaciones-api/plan.md`.
+- [X] T001 Confirm the documentation-only scope, existing endpoint owners, and artifact paths in `specs/003-telebot-operaciones-api/plan.md`.
 
 ---
 
@@ -26,7 +26,7 @@ description: "Task list for the Telebot Operaciones API contract"
 
 **Purpose**: Establish shared contract terminology and the boundary between per-node outcomes and HTTP failures before story-specific review.
 
-- [ ] T002 Reconcile the shared response concepts and HTTP error boundary in `specs/003-telebot-operaciones-api/data-model.md` with the endpoint examples in `specs/003-telebot-operaciones-api/contracts/telebot-operaciones.md`.
+- [X] T002 Reconcile the shared response concepts and HTTP error boundary in `specs/003-telebot-operaciones-api/data-model.md` with the endpoint examples in `specs/003-telebot-operaciones-api/contracts/telebot-operaciones.md`.
 
 **Checkpoint**: Shared response and error semantics are aligned; story-specific documentation reviews can proceed independently.
 
@@ -38,7 +38,7 @@ description: "Task list for the Telebot Operaciones API contract"
 
 **Independent Test**: Review the request and response examples in the contract and confirm AT-01 shows the same input resolving through `nodeb` for 3G and `nodo` for 4G/5G, with `name_resolution` identifying both input and resolved values.
 
-- [ ] T003 [P] [US1] Reconcile the 3G/4G/5G request examples and AT-01 name-resolution expectations in `specs/003-telebot-operaciones-api/contracts/telebot-operaciones.md`.
+- [X] T003 [P] [US1] Reconcile the 3G/4G/5G request examples and AT-01 name-resolution expectations in `specs/003-telebot-operaciones-api/contracts/telebot-operaciones.md`.
 
 **Checkpoint**: The contract independently specifies the shared identifier flow and technology-specific resolutions.
 
@@ -50,7 +50,7 @@ description: "Task list for the Telebot Operaciones API contract"
 
 **Independent Test**: Review `Node Error` in the data model and verify `NODE_NOT_FOUND`, `NODE_DISCONNECTED`, `TECHNOLOGY_UNAVAILABLE`, null-code source errors, and HTTP failures remain distinguishable, including the 3G HTTP 200 behavior.
 
-- [ ] T004 [P] [US2] Reconcile stable node error semantics, optional suggestions, and their HTTP boundary in `specs/003-telebot-operaciones-api/data-model.md`.
+- [X] T004 [P] [US2] Reconcile stable node error semantics, including the 3G all-cells-`Unavailable` rule, optional suggestions, and the HTTP boundary in `specs/003-telebot-operaciones-api/data-model.md`.
 
 **Checkpoint**: A consumer can distinguish node conditions from authentication, validation, Huawei, and directory failures using the documented contract.
 
@@ -62,7 +62,7 @@ description: "Task list for the Telebot Operaciones API contract"
 
 **Independent Test**: Verify the quickstart includes the partial 3G-controller and mixed 4G/5G scenarios from AT-06 and AT-07, and states that successful records are retained without a node-level failure for a node that returned data.
 
-- [ ] T005 [P] [US3] Reconcile the partial-result validation scenarios with AT-06 and AT-07 in `specs/003-telebot-operaciones-api/quickstart.md`.
+- [X] T005 [P] [US3] Reconcile partial controller/node results and 3G mixed-cell availability scenarios with AT-04b, AT-06, and AT-07 in `specs/003-telebot-operaciones-api/quickstart.md`.
 
 **Checkpoint**: The partial-result behavior can be checked independently for 3G and multi-node 4G/5G requests.
 
@@ -74,7 +74,7 @@ description: "Task list for the Telebot Operaciones API contract"
 
 **Independent Test**: Verify the research decision records that only the existing `CURRENT` response is used, and that normalized clear time determines `cleared` for null, non-null, and contradictory source values.
 
-- [ ] T006 [P] [US4] Reconcile the `CURRENT`-only behavior and clear-time precedence decision in `specs/003-telebot-operaciones-api/research.md`.
+- [X] T006 [P] [US4] Reconcile the `CURRENT`-only behavior and clear-time precedence decision in `specs/003-telebot-operaciones-api/research.md`.
 
 **Checkpoint**: The alarm contract does not contradict itself or imply a history query.
 
@@ -86,7 +86,7 @@ description: "Task list for the Telebot Operaciones API contract"
 
 **Independent Test**: Verify FR-017/FR-018 and the KPI acceptance scenarios state that requests need no period fields, records include `startTime`, unresolved identifiers produce `NODE_NOT_FOUND`, and a resolved node with no measurements returns empty `records` and `errors`.
 
-- [ ] T007 [P] [US5] Reconcile KPI request and response requirements, including the empty-measurement case, in `specs/003-telebot-operaciones-api/spec.md`.
+- [X] T007 [P] [US5] Reconcile KPI request and response requirements, including the empty-measurement case, in `specs/003-telebot-operaciones-api/spec.md`.
 
 **Checkpoint**: KPI behavior is independently specified without inferring connectivity from empty measurements.
 
@@ -96,8 +96,8 @@ description: "Task list for the Telebot Operaciones API contract"
 
 **Purpose**: Close requirements traceability and verify the documentation handoff.
 
-- [ ] T008 Cross-check functional requirements and success criteria against the acceptance scenarios in `specs/003-telebot-operaciones-api/spec.md` and `specs/003-telebot-operaciones-api/contracts/telebot-operaciones.md`.
-- [ ] T009 Verify the documented prerequisite command and contract scenarios in `specs/003-telebot-operaciones-api/quickstart.md`; retain runtime validation as a follow-up for the implementation phase.
+- [X] T008 Cross-check functional requirements and success criteria against the acceptance scenarios in `specs/003-telebot-operaciones-api/spec.md` and `specs/003-telebot-operaciones-api/contracts/telebot-operaciones.md`; record a traceability table and unresolved gaps in `quickstart.md`.
+- [X] T009 Verify the documented regression command and contract scenarios in `specs/003-telebot-operaciones-api/quickstart.md`; record the outcome and retain runtime acceptance as a follow-up for the implementation phase.
 
 ---
 

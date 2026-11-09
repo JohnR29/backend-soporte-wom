@@ -56,7 +56,7 @@ specs/003-telebot-operaciones-api/
 │   └── telebot-operaciones.md
 ├── checklists/
 │   └── requirements.md
-└── tasks.md                 # Phase 2 output; not generated here
+└── tasks.md                 # Documentation task list
 ```
 
 ### Relevant Existing Source
@@ -77,15 +77,3 @@ tests/
 ## Complexity Tracking
 
 No constitution violations.
-
-**Structure Decision**: [Document the selected structure and reference the real
-directories captured above]
-
-## Complexity Tracking
-
-> **Fill ONLY if Constitution Check has violations that must be justified**
-
-| Violation | Why Needed | Simpler Alternative Rejected Because |
-|-----------|------------|-------------------------------------|
-| [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
-| [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |

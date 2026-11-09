@@ -10,9 +10,9 @@
 
 ## UMTS NodeB disconnected behavior
 
-**Decision**: Do not define a 3G `NODE_DISCONNECTED` mapping based on guessed Huawei/RNC messages. Keep the spec's requirement to validate this case with a real response capture or representative fixture before implementation.
+**Decision**: Classify a 3G NodeB as `NODE_DISCONNECTED` when every returned cell has `Operation state = "Unavailable"`. Preserve those cells in `records` and also return the node error. If availability is mixed, preserve the records without `NODE_DISCONNECTED`.
 
-**Rationale**: Existing route tests cover a NodeB found by an RNC and the case where every RNC says it is not configured. They do not cover a configured-but-disconnected NodeB. The generic LTE/NR `Ne is not connected.` response is not evidence of UMTS/RNC behavior. All-RNC `NodeB is not configured` remains `NODE_NOT_FOUND`, as already clarified in the feature spec.
+**Rationale**: The domain owner confirmed the state value, all-cells threshold, and requirement to preserve records with the error. Existing route tests currently show `Operation state: Available`; implementation should add fixtures for all-unavailable and mixed-availability results. All-RNC `NodeB is not configured` remains `NODE_NOT_FOUND`.
 
 **Alternatives considered**: Reusing the LTE/NR disconnected message or treating any empty 3G result as disconnected was rejected because neither is supported by repository evidence and both conflate distinct failure states.
 

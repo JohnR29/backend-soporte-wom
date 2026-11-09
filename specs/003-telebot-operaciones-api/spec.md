@@ -18,9 +18,20 @@
 - Q: Si el sitio existe en el directorio con `nodeb` pero ninguna RNC devuelve celdas del NodeB, ¿qué código se emite en 3G? → A: `NODE_NOT_FOUND` (todas las RNC informan que el NodeB no está configurado).
 - Q: Si el identificador se resuelve a un nodo válido pero `/mml/kpis` no devuelve mediciones, ¿qué responde la API? → A: `records: []` y `errors: []`, sin código de nodo.
 
+### Session 2026-11-08
+
+- Q: ¿3G acepta una lista de nodos? → A: No; 3G consulta un NodeB por solicitud. Los lotes aplican a 4G/5G y KPIs.
+- Q: ¿Cómo se observa un NodeB 3G desconectado? → A: La RNC responde con las celdas y su estado; la regla de clasificación quedó definida el 2026-11-09.
+
+### Session 2026-11-09
+
+- Q: ¿Qué valor de estado identifica una celda 3G indisponible? → A: `Operation state = "Unavailable"`.
+- Q: ¿Cuándo se clasifica como desconectado un NodeB 3G? → A: Cuando todas las celdas devueltas tienen `Operation state = "Unavailable"`; si solo algunas tienen ese estado, no se emite `NODE_DISCONNECTED`.
+- Q: ¿Se conservan los registros cuando todas las celdas 3G están indisponibles? → A: Sí. Se devuelven las celdas en `records` y además un error `NODE_DISCONNECTED`.
+
 ## Consumidores y alcance
 
-- **Consumidor**: Telebot Operaciones (bot), autenticado con el token existente de la API. Consulta un nodo a la vez, pero el contrato debe funcionar igual con uno o varios.
+- **Consumidor**: Telebot Operaciones (bot), autenticado con el token existente de la API. 3G acepta un NodeB por solicitud; 4G/5G y KPIs aceptan uno o varios identificadores. Actualmente el bot usa comandos separados por tecnología y no consulta las tres automáticamente.
 - **Dentro de alcance**: contrato de `POST /mml/cell-summary-umts`, `POST /mml/cell-summary-lte`, `POST /mml/cell-summary-nr`, `GET /alarms/{site_name}` y `POST /mml/kpis`.
 - **Fuera de alcance**: cálculo de estado global entre tecnologías (lo hace el bot, que muestra 3G/4G/5G por separado), formato de mensajes del bot, alarmas históricas, cambios en la tabla de sitios, otros endpoints (`/mml/command`, `/mml/scripts`, `/alarms/hermes`, `/alarms/license-trial`).
 - **Naturaleza de los datos**: tiempo real. La API no entrega un timestamp de origen para el estado de celdas; el bot muestra la hora en que inició su consulta.
@@ -41,7 +52,7 @@
 | `/alarms/{site}?limit=500` solo consulta `dataType=CURRENT` | Confirmado; `limit` 1–1000, por defecto 500 | `alarms.py` |
 | `cleared` es "Activa"/"Limpia"; `alarmClearedTime` es `null` si es 0 o falta | Confirmado, pero ambos campos se derivan por separado y pueden contradecirse | `_simplify_alarm`, `_epoch_ms_to_iso` |
 | `/mml/kpis` devuelve las últimas 24 h sin `period_start`/`period_end` y cada fila trae `startTime` | Confirmado; ventana horaria cerrada con desfase de 15 min; `startTime` en hora de Chile sin zona explícita; solo contadores de eNodeB (4G) | `_last_24h_window`, `_flatten_measurement_results` |
-| Qué datos devuelve Huawei para un NodeB 3G desconectado | **Pendiente**: el repositorio no lo documenta | Ver Pendientes |
+| NodeB 3G desconectado | Confirmado por el responsable de dominio: si todas las celdas devueltas tienen `Operation state = "Unavailable"`, se conserva `records` y se añade `NODE_DISCONNECTED`; disponibilidad mixta no produce ese error | Aclaración 2026-11-09 |
 | Si `CURRENT` incluye alarmas clareadas | **Pendiente**: no confirmado contra el MAE real | Ver Pendientes |
 
 ## User Scenarios & Testing *(mandatory)*
@@ -73,7 +84,7 @@ Para cada nodo con problemas, la API informa un código estable y un mensaje leg
 **Acceptance Scenarios**:
 
 1. **Given** un identificador que no existe en el directorio, **When** se consulta 3G, 4G o 5G, **Then** HTTP 200, `records: []` y un error `NODE_NOT_FOUND` con `suggestions` si las hay.
-2. **Given** un nodo que Huawei reporta como no conectado y sin datos, **When** se consulta, **Then** HTTP 200 y un error `NODE_DISCONNECTED`.
+2. **Given** un nodo 4G/5G que Huawei reporta como no conectado, o un NodeB 3G cuyas celdas tienen todas `Operation state = "Unavailable"`, **When** se consulta, **Then** HTTP 200 y un error `NODE_DISCONNECTED`; para el caso 3G también se conservan las celdas en `records`.
 3. **Given** un nodo que existe pero sin mapeo para la tecnología, o conectado sin celdas de esa tecnología, **When** se consulta esa tecnología, **Then** HTTP 200 y un error `TECHNOLOGY_UNAVAILABLE`.
 4. **Given** Huawei no responde, el token es inválido o el cuerpo no cumple el esquema, **When** se consulta, **Then** la respuesta es 502/401/422 según corresponda y **no** contiene `errors[].code` de nodo.
 
@@ -89,8 +100,9 @@ Si algunos controladores o comandos fallan pero el nodo consultado devolvió cel
 
 **Acceptance Scenarios**:
 
-1. **Given** el NodeB se encuentra en una RNC y otras RNC devuelven error, **When** se consulta 3G, **Then** `records` trae las celdas y no se emite `NODE_DISCONNECTED` ni `NODE_NOT_FOUND` para el nodo.
+1. **Given** el NodeB devuelve al menos una celda cuyo `Operation state` no es `Unavailable` y otras RNC devuelven error, **When** se consulta 3G, **Then** se conservan las celdas y no se emite `NODE_DISCONNECTED` ni `NODE_NOT_FOUND` para el nodo.
 2. **Given** una consulta 4G/5G con varios nodos donde uno falla, **When** se ejecuta, **Then** los demás aportan `records` y el fallido aparece en `errors`.
+3. **Given** un NodeB 3G devuelve celdas con disponibilidad mixta, **When** se consulta, **Then** todas las celdas se conservan y no se emite `NODE_DISCONNECTED`; si todas son `Unavailable`, se conservan y se emite `NODE_DISCONNECTED`.
 
 ---
 
@@ -129,7 +141,7 @@ El bot consulta KPIs enviando solo el nodo; la API devuelve las últimas 24 hora
 - Identificador que en el directorio tiene mapeo ambiguo (`ambiguous_mapping`): error de nodo con `TECHNOLOGY_UNAVAILABLE` y no se llama a Huawei (ver FR-006).
 - El bot envía a 3G el nombre 4G/5G (p. ej. `MBTS-AIS_3G_001`) y ese valor no está en `nodeb` ni es un sitio: `NODE_NOT_FOUND`. No se infieren ni se quitan prefijos.
 - Directorio de sitios no disponible: error HTTP 503 (error de servidor, no resultado por nodo).
-- Nodo desconectado: `records: []`; si además otros controladores fallan, solo se informa el error del nodo consultado en el código estable.
+- Nodo 4G/5G desconectado: `records: []`; si además otros controladores fallan, solo se informa el error del nodo consultado en el código estable. En 3G, todas las celdas con `Operation state = "Unavailable"` producen `NODE_DISCONNECTED` conservando registros; disponibilidad mixta no produce ese error.
 - Nodo conectado pero con `records` vacíos en una tecnología de estado (3G/4G/5G): `TECHNOLOGY_UNAVAILABLE`; en KPIs no se emite error.
 - Alarmas del sitio inexistentes o sin alarmas: `alarms: []`, `count: 0` (no se distingue sitio inexistente de sitio sin alarmas).
 - Más de 500 alarmas: se respeta `limit`/`marker` existentes; el bot usa los 500 solicitados.
@@ -148,19 +160,19 @@ El bot consulta KPIs enviando solo el nodo; la API devuelve las últimas 24 hora
 
 **Errores por nodo**
 
-- **FR-005**: `errors` MUST ser una lista de objetos con, como mínimo: `code`, `message` (legible, en español), `input` y `ne_name` (valor resuelto o `null`). El campo existente `error` (texto original de Huawei) se conserva por compatibilidad.
+- **FR-005**: `errors` MUST ser una lista de objetos con, como mínimo: `code`, `message` (legible, en español), `input` y `ne_name` (valor resuelto o `null`; nombre del controlador para errores de controlador). El campo existente `error` (texto original de Huawei) se conserva por compatibilidad.
 - **FR-006**: Los códigos estables son:
   - `NODE_NOT_FOUND`: el identificador no existe en el directorio, o Huawei informa que el NE no existe; en 3G, también cuando el sitio tiene `nodeb` en el directorio pero todas las RNC informan que el NodeB no está configurado. Incluye `suggestions` cuando las hay.
-  - `NODE_DISCONNECTED`: el nodo existe pero está desconectado y no entregó datos (en 4G/5G, Huawei responde que el NE no está conectado).
+  - `NODE_DISCONNECTED`: en 4G/5G, el nodo existe y Huawei informa que el NE no está conectado sin entregar datos; en 3G, todas las celdas devueltas tienen `Operation state = "Unavailable"`. En este caso 3G se conservan los `records` junto con el error.
   - `TECHNOLOGY_UNAVAILABLE`: el nodo existe pero el directorio no tiene mapeo para esa tecnología (`missing_mapping`, `ambiguous_mapping`), o está conectado y no devolvió celdas/NE de esa tecnología (en 3G, solo si una RNC lo reconoce y no devuelve celdas). No se emite si el nodo está desconectado.
 - **FR-007**: Un error por nodo MUST responder HTTP 200. `/mml/cell-summary-umts` deja de responder 404 para identificador inexistente y usa `NODE_NOT_FOUND`.
 - **FR-008**: Los errores HTTP MUST seguir distinguibles: 401 (token), 422 (esquema), 502/504 (Huawei no completó la comunicación), 503 (directorio no disponible), 400 (solicitud rechazada por Huawei). Estos NO usan los códigos de FR-006.
 - **FR-009**: Otros fallos por nodo no cubiertos por FR-006 MUST seguir apareciendo en `errors` con su `error` original y `code: null`, sin ocultarlos.
-- **FR-010**: Los fallos por nodo MUST funcionar igual para una consulta de un solo nodo y de varios.
+- **FR-010**: Los fallos por nodo MUST funcionar igual para una consulta de un solo nodo y de varios en los endpoints que aceptan listas (4G/5G y KPIs); 3G acepta un NodeB por solicitud.
 
 **Resultados parciales**
 
-- **FR-011**: Los `records` obtenidos MUST conservarse aunque otros controladores, comandos o nodos fallen. Los errores de otros controladores no invalidan los `records` del nodo consultado y no generan `NODE_DISCONNECTED`/`NODE_NOT_FOUND` del nodo si este entregó datos.
+- **FR-011**: Los `records` obtenidos MUST conservarse aunque otros controladores, comandos o nodos fallen. Los errores de otros controladores no invalidan los `records` del nodo consultado. Excepción: para 3G, si todas las celdas devueltas tienen `Operation state = "Unavailable"`, se conservan los `records` y se añade `NODE_DISCONNECTED`; `NODE_NOT_FOUND` no se emite si el nodo entregó datos.
 - **FR-012**: Cada tecnología MUST responder de forma independiente; la API no calcula un estado global entre tecnologías ni mezcla registros de tecnologías distintas.
 
 **Alarmas**
@@ -192,7 +204,7 @@ El bot consulta KPIs enviando solo el nodo; la API devuelve las últimas 24 hora
 
 ### Measurable Outcomes
 
-- **SC-001**: El 100% de los escenarios de fallo por nodo (inexistente, desconectado, sin tecnología) de las tres tecnologías devuelve HTTP 200 con el código esperado, tanto con uno como con varios nodos.
+- **SC-001**: El 100% de los escenarios de fallo por nodo (inexistente, desconectado, sin tecnología) de las tres tecnologías devuelve HTTP 200 con el código esperado: un NodeB por solicitud en 3G y uno o varios nodos en 4G/5G. En 3G, todas las celdas `Unavailable` producen `NODE_DISCONNECTED` conservando sus registros; disponibilidad mixta no produce ese código.
 - **SC-002**: En el 100% de los casos de error HTTP (401, 422, 502, 503) la respuesta no contiene un código de nodo de FR-006.
 - **SC-003**: En todas las pruebas con resultados mixtos, el 100% de los `records` válidos se conserva.
 - **SC-004**: En el 100% de las alarmas de prueba, `cleared` y `alarmClearedTime` son coherentes (FR-014).
@@ -203,12 +215,16 @@ El bot consulta KPIs enviando solo el nodo; la API devuelve las últimas 24 hora
 
 - El directorio de sitios (spec 002) es la fuente de verdad del identificador; el bot no aplica reglas propias de prefijos.
 - La detección de `NODE_DISCONNECTED` en 4G/5G se basa en el texto "Ne is not connected." de Huawei (confirmado en pruebas y README); se aísla en un único punto de mapeo.
+- En 3G, el estado `Operation state = "Unavailable"` en todas las celdas devueltas identifica `NODE_DISCONNECTED`; disponibilidad mixta conserva las celdas sin error de desconexión.
 - Los errores de las RNC que no alojan el NodeB (p. ej. "NodeB is not configured") en 3G no se consideran fallo del nodo si otra RNC devuelve celdas.
 - Todo contrato nuevo es aditivo; los consumidores actuales que ignoren campos desconocidos no se rompen.
 - `startTime` de KPIs se mantiene en hora de Chile sin zona explícita, y las horas de alarmas en ISO 8601 con zona de Chile.
 
-## Pendientes de confirmación (no bloquean el contrato)
+## Pendientes de confirmación
 
-1. **Detección de NodeB 3G desconectado**: el repositorio no documenta qué devuelve Huawei (RNC) cuando el NodeB está caído pero sigue configurado. Debe validarse con una captura real o simulada antes de implementar el mapeo a `NODE_DISCONNECTED` en 3G. Ya decidido: si todas las RNC informan "not configured", el código es `NODE_NOT_FOUND`.
-2. **Alarmas clareadas en `CURRENT`**: no está confirmado que Huawei las devuelva; si no, el bot no mostrará clareadas (decisión ya aceptada).
-3. **Fallo por nodo en KPIs**: el contrato solo cubre identificadores no resueltos; el comportamiento ante un nodo desconectado en KPIs no está especificado porque la consulta de rendimiento no informa conexión.
+1. **Alarmas clareadas en `CURRENT`**: no está confirmado que Huawei las devuelva; si no, el bot no mostrará clareadas (decisión ya aceptada).
+2. **Fallo por nodo en KPIs**: el contrato solo cubre identificadores no resueltos; el comportamiento ante un nodo desconectado en KPIs no está especificado porque la consulta de rendimiento no informa conexión.
+
+## Integración con el bot
+
+Según el análisis del repositorio del bot proporcionado por su agente, actualmente existen comandos separados por tecnología: 3G envía un `nodeb_name` y 4G/5G envían listas `ne_names`. El bot muestra `records` y solo cuenta los elementos de `errors`; todavía no interpreta sus códigos ni `name_resolution`. Tampoco clasifica alarmas por fecha de clareo ni interpreta el estado de las celdas. Estos son comportamientos actuales del consumidor, no garantías del contrato objetivo. La implementación y pruebas del bot corresponden a su propio repositorio.
