@@ -712,7 +712,9 @@ def _technology_unavailable_error(item: dict, technology: str) -> dict:
     }
 
 
-def _state_payload_errors(name_resolution: list[dict], *payloads: dict) -> list[dict]:
+def _state_payload_errors(
+    name_resolution: list[dict], *payloads: dict, technology: str
+) -> list[dict]:
     resolved_by_name = {
         item["resolved"]: item
         for item in name_resolution
@@ -730,7 +732,10 @@ def _state_payload_errors(name_resolution: list[dict], *payloads: dict) -> list[
             input_name = resolution["input"] if resolution else ne_name
             raw_error = str(report["error"])
             normalized_error = raw_error.lower()
-            if "not connected" in normalized_error or "disconnected" in normalized_error:
+            if "939589973" in raw_error or "command does not exist" in normalized_error:
+                code = "TECHNOLOGY_UNAVAILABLE"
+                message = f"El nodo no tiene la tecnología {technology} disponible."
+            elif "not connected" in normalized_error or "disconnected" in normalized_error:
                 code = "NODE_DISCONNECTED"
                 message = "Nodo desconectado."
             elif "not exist" in normalized_error or "no existe" in normalized_error:
@@ -866,7 +871,7 @@ async def create_cell_summary(
     dsp_dataframe = _records_dataframe(dsp_payload, "DSP CELL", empty_columns=dsp_columns)[dsp_columns]
     if dsp_dataframe.empty:
         errors = _resolution_errors(name_resolution, "4G")
-        errors.extend(_state_payload_errors(name_resolution, dsp_payload))
+        errors.extend(_state_payload_errors(name_resolution, dsp_payload, technology="4G"))
         errors.extend(
             _technology_unavailable_errors(
                 name_resolution, "4G", set(), dsp_payload
@@ -898,7 +903,9 @@ async def create_cell_summary(
     summary_dataframe = summary_dataframe.astype(object).where(summary_dataframe.notna(), None)
     record_names = set(summary_dataframe["ne_name"].dropna().tolist())
     errors = _resolution_errors(name_resolution, "4G")
-    errors.extend(_state_payload_errors(name_resolution, dsp_payload, lst_payload))
+    errors.extend(
+        _state_payload_errors(name_resolution, dsp_payload, lst_payload, technology="4G")
+    )
     errors.extend(
         _technology_unavailable_errors(
             name_resolution, "4G", record_names, dsp_payload, lst_payload
@@ -948,7 +955,9 @@ async def create_cell_summary_nr(
     )[nrcell_columns]
     if nrcell_dataframe.empty:
         errors = _resolution_errors(name_resolution, "5G")
-        errors.extend(_state_payload_errors(name_resolution, nrcell_payload))
+        errors.extend(
+            _state_payload_errors(name_resolution, nrcell_payload, technology="5G")
+        )
         errors.extend(
             _technology_unavailable_errors(
                 name_resolution, "5G", set(), nrcell_payload
@@ -1008,7 +1017,11 @@ async def create_cell_summary_nr(
     errors = _resolution_errors(name_resolution, "5G")
     errors.extend(
         _state_payload_errors(
-            name_resolution, nrcell_payload, nrducell_payload, nrducelltrp_payload
+            name_resolution,
+            nrcell_payload,
+            nrducell_payload,
+            nrducelltrp_payload,
+            technology="5G",
         )
     )
     errors.extend(

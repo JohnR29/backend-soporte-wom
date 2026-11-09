@@ -2072,6 +2072,58 @@ def test_state_routes_classify_disconnected_and_empty_connected_nodes(endpoint, 
 
 
 @pytest.mark.parametrize(
+    ("raw_error", "expected_code", "expected_message"),
+    [
+        (
+            "RETCODE = 939589973 Command does not exist or resources are not ready.",
+            "TECHNOLOGY_UNAVAILABLE",
+            "El nodo no tiene la tecnología 5G disponible.",
+        ),
+        (
+            "Command does not exist",
+            "TECHNOLOGY_UNAVAILABLE",
+            "El nodo no tiene la tecnología 5G disponible.",
+        ),
+        ("Ne is not connected.", "NODE_DISCONNECTED", "Nodo desconectado."),
+        (
+            "The following NE does not exist: NE-1",
+            "NODE_NOT_FOUND",
+            "No se encontró el nodo NE-1.",
+        ),
+    ],
+)
+def test_nr_cell_summary_classifies_huawei_command_errors(
+    raw_error, expected_code, expected_message
+):
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    try:
+        with (
+            patch(
+                "app.api.routes.huawei._execute_mml",
+                new=AsyncMock(
+                    return_value={
+                        "results": [
+                            {"name": "NE-1", "report": {"error": raw_error}}
+                        ]
+                    }
+                ),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.post(
+                "/mml/cell-summary-nr", json={"ne_names": ["NE-1"]}
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    error = response.json()["errors"][0]
+    assert error["code"] == expected_code
+    assert error["message"] == expected_message
+    assert error["error"] == raw_error
+
+
+@pytest.mark.parametrize(
     ("states", "expected_codes"),
     [
         (["Unavailable", "Unavailable"], ["NODE_DISCONNECTED"]),
