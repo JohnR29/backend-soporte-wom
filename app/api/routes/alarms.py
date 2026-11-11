@@ -1,13 +1,16 @@
 from datetime import datetime
+from typing import Literal
 from zoneinfo import ZoneInfo
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 import httpx
 import logging
 
 from app.api.routes.auth import require_user
 from app.services.huawei_client import get_client, get_huawei_headers, mark_huawei_activity
+from app.services.node_resolution import resolve_alarm_name
 
 router = APIRouter(tags=["Alarms"])
 logger = logging.getLogger(__name__)
@@ -260,15 +263,79 @@ async def get_site_alarms(
     site_name: str,
     limit: int = Query(500, ge=1, le=1000),
     marker: str | None = Query(None),
+    technology: Literal["3G", "4G", "5G"] = Query("4G"),
     user_id: str = Depends(require_user),
 ):
     """Consulta alarmas CURRENT de un sitio y las devuelve en formato reducido."""
-    payload = await _get_current_alarms(site_name, limit, marker)
+    try:
+        resolution = await resolve_alarm_name(site_name, technology)
+    except HTTPException as error:
+        if error.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+            raise
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "error": "service_unavailable",
+                "message": "El directorio de sitios no está disponible",
+                "details": "site_directory_unreachable",
+                "timestamp": datetime.now(_CHILE_TZ).isoformat(),
+            },
+        )
+
+    if resolution["status"] == "not_found":
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={
+                "error": "not_found",
+                "message": f"El sitio '{site_name}' no fue encontrado en el directorio",
+                "user_input": site_name,
+                "technology": technology,
+                "resolved_node": None,
+                "resolved_site": None,
+                "suggestions": resolution["suggestions"],
+                "available_technologies": None,
+                "timestamp": datetime.now(_CHILE_TZ).isoformat(),
+            },
+        )
+
+    if resolution["status"] in {"missing_mapping", "ambiguous_mapping"}:
+        missing_mapping = resolution["status"] == "missing_mapping"
+        return JSONResponse(
+            status_code=(
+                status.HTTP_404_NOT_FOUND if missing_mapping else status.HTTP_409_CONFLICT
+            ),
+            content={
+                "error": resolution["status"],
+                "message": (
+                    f"El sitio '{resolution['resolved_site']}' existe pero no tiene "
+                    f"mapeo para la tecnología '{technology}'"
+                    if missing_mapping
+                    else f"El sitio '{resolution['resolved_site']}' tiene mapeos ambiguos"
+                ),
+                "user_input": site_name,
+                "technology": technology,
+                "resolved_node": None,
+                "resolved_site": resolution["resolved_site"],
+                "suggestions": [],
+                "available_technologies": resolution.get("available_technologies"),
+                "timestamp": datetime.now(_CHILE_TZ).isoformat(),
+            },
+        )
+
+    resolved_node = resolution["resolved"]
+    payload = await _get_current_alarms(resolved_node, limit, marker)
     alarms = [_simplify_alarm(raw) for raw in payload.get("alarmInformationList", [])]
 
     return {
+        "error": None,
         "site_name": site_name,
+        "user_input": site_name,
+        "resolved_site": resolution["resolved_site"],
+        "resolved_node": resolved_node,
+        "technology": technology,
         "alarms": alarms,
         "count": len(alarms),
+        "alarm_count": len(alarms),
         "marker": payload.get("marker"),
+        "timestamp": datetime.now(_CHILE_TZ).isoformat(),
     }

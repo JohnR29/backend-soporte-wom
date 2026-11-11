@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from app.services.node_resolution import resolve_names
+from app.services.node_resolution import resolve_alarm_name, resolve_names
 
 
 class FakeResult:
@@ -70,7 +70,12 @@ def test_resolve_site_uses_trimmed_case_insensitive_exact_match(directory_engine
     result = asyncio.run(resolve_names(["  an0069  "], "nodo"))
 
     assert result == [
-        {"input": "  an0069  ", "resolved": "MBTS-AN0069", "status": "resolved"}
+        {
+            "input": "  an0069  ",
+            "resolved": "MBTS-AN0069",
+            "resolved_site": "AN0069",
+            "status": "resolved",
+        }
     ]
 
 
@@ -78,7 +83,12 @@ def test_resolve_direct_full_node_to_canonical_directory_value(directory_engine)
     result = asyncio.run(resolve_names([" mbts-an0069 "], "nodo"))
 
     assert result == [
-        {"input": " mbts-an0069 ", "resolved": "MBTS-AN0069", "status": "resolved"}
+        {
+            "input": " mbts-an0069 ",
+            "resolved": "MBTS-AN0069",
+            "resolved_site": "AN0069",
+            "status": "resolved",
+        }
     ]
 
 
@@ -88,6 +98,16 @@ def test_resolve_site_without_target_mapping(directory_engine):
     assert result[0]["input"] == "AN0070"
     assert result[0]["resolved"] is None
     assert result[0]["status"] == "missing_mapping"
+    assert result[0]["resolved_site"] == "AN0070"
+    assert result[0]["available_technologies"] == ["3G"]
+
+
+def test_resolve_alarm_name_selects_nodeb_for_3g(directory_engine):
+    result = asyncio.run(resolve_alarm_name(" an0069 ", "3G"))
+
+    assert result["resolved"] == "UAN0069"
+    assert result["resolved_site"] == "AN0069"
+    assert result["status"] == "resolved"
 
 
 def test_resolve_reports_ambiguous_target_mapping(monkeypatch):
@@ -109,8 +129,10 @@ def test_resolve_reports_ambiguous_target_mapping(monkeypatch):
     assert result == {
         "input": "RM173",
         "resolved": None,
+        "resolved_site": "RM173",
         "status": "ambiguous_mapping",
         "error": "El sitio tiene múltiples mapeos para nodo.",
+        "suggestions": [],
     }
 
 
@@ -156,12 +178,38 @@ def test_suggestions_are_limited_to_five_and_empty_when_directory_has_no_sites(m
             [{"sitio": site, "nodo": f"N-{site}", "nodeb": None} for site in sites]
         ),
     )
-    suggestions = asyncio.run(resolve_names(["MISS"], "nodo"))[0]["suggestions"]
+    suggestions = asyncio.run(resolve_names(["SITE"], "nodo"))[0]["suggestions"]
     assert len(suggestions) == 5
 
     monkeypatch.setattr(node_resolution, "_engine", FakeEngine([]))
     empty_suggestions = asyncio.run(resolve_names(["MISS"], "nodo"))[0]["suggestions"]
     assert empty_suggestions == []
+
+
+def test_alarm_suggestions_include_scores_and_filter_below_threshold(monkeypatch):
+    from app.services import node_resolution
+
+    monkeypatch.setattr(
+        node_resolution,
+        "_engine",
+        FakeEngine(
+            [
+                {"sitio": "AN0069", "nodo": "MBTS-AN0069", "nodeb": "UAN0069"},
+                {"sitio": "ZZZZZZ", "nodo": "MBTS-ZZZZZZ", "nodeb": None},
+            ]
+        ),
+    )
+
+    result = asyncio.run(resolve_alarm_name("AN0068", "4G"))
+
+    assert result["status"] == "not_found"
+    assert result["suggestions"][0]["nemonica"] == "AN0069"
+    assert result["suggestions"][0]["nodo"] == "MBTS-AN0069"
+    assert result["suggestions"][0]["similarity"] >= 0.6
+    assert all(item["similarity"] >= 0.6 for item in result["suggestions"])
+
+    filtered_result = asyncio.run(resolve_alarm_name("XXXXXX", "4G"))
+    assert filtered_result["suggestions"] == []
 
 
 def test_versioned_typo_cases_meet_top_five_recall(monkeypatch):

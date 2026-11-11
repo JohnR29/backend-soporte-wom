@@ -10,3 +10,8 @@ __pycache__
 certs
 tests
 *.log
+*.log*
+.gitignore
+Dockerfile*
+.dockerignore
+coverage/

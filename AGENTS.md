@@ -39,3 +39,7 @@ See [README.md](README.md) for full setup and deployment steps. The Docker deplo
 3. Do not construct new `httpx`/`requests` clients — reuse the shared one so proxy/CA settings stay consistent.
 
 For auth flow, endpoint shapes, pagination, error codes, and rate limits of the Huawei MAE-Access API itself, see the [huawei-api skill](.github/skills/huawei-api/SKILL.md).
+
+## Pruebas
+
+- Para todas las pruebas debes usar el enviroment conda backend-soporte

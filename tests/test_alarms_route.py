@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.routes.alarms import _HERMES_FILTER, _LICENSE_TRIAL_FILTER, _epoch_ms_to_iso
@@ -30,8 +31,20 @@ def _call_license_trial_endpoint(client, params=None):
 
 def _call_alarms_endpoint(path, client, params=None):
     app.dependency_overrides[require_user] = lambda: "operator-1"
+    site_name = path.rsplit("/", 1)[-1]
     try:
         with (
+            patch(
+                "app.api.routes.alarms.resolve_alarm_name",
+                new=AsyncMock(
+                    return_value={
+                        "input": site_name,
+                        "resolved": site_name,
+                        "resolved_site": site_name,
+                        "status": "resolved",
+                    }
+                ),
+            ),
             patch("app.api.routes.alarms.get_client", return_value=client),
             patch(
                 "app.api.routes.alarms.get_huawei_headers",
@@ -42,6 +55,133 @@ def _call_alarms_endpoint(path, client, params=None):
             return test_client.get(path, params=params)
     finally:
         app.dependency_overrides.clear()
+
+
+def _call_site_alarms_with_resolution(client, resolution, params=None, resolver_error=None):
+    app.dependency_overrides[require_user] = lambda: "operator-1"
+    resolver = AsyncMock(return_value=resolution)
+    if resolver_error is not None:
+        resolver.side_effect = resolver_error
+    try:
+        with (
+            patch("app.api.routes.alarms.resolve_alarm_name", new=resolver),
+            patch("app.api.routes.alarms.get_client", return_value=client),
+            patch(
+                "app.api.routes.alarms.get_huawei_headers",
+                new=AsyncMock(return_value={"X-Auth-Token": "test-token"}),
+            ),
+            TestClient(app) as test_client,
+        ):
+            response = test_client.get("/alarms/an0069", params=params)
+    finally:
+        app.dependency_overrides.clear()
+    return response, resolver
+
+
+@pytest.mark.parametrize(
+    ("params", "target_column", "resolved_node", "technology"),
+    [
+        (None, "nodo", "MBTS-AN0069", "4G"),
+        ({"technology": "3G"}, "nodeb", "UAN0069", "3G"),
+    ],
+)
+def test_site_alarms_resolve_canonical_node_before_huawei_call(
+    params, target_column, resolved_node, technology
+):
+    client = FakeHuaweiClient({"alarmInformationList": [], "marker": "null"})
+    resolution = {
+        "input": "an0069",
+        "resolved": resolved_node,
+        "resolved_site": "AN0069",
+        "status": "resolved",
+    }
+
+    response, resolver = _call_site_alarms_with_resolution(client, resolution, params)
+
+    assert response.status_code == 200
+    assert response.json()["user_input"] == "an0069"
+    assert response.json()["resolved_site"] == "AN0069"
+    assert response.json()["resolved_node"] == resolved_node
+    assert response.json()["technology"] == technology
+    resolver.assert_awaited_once_with("an0069", technology)
+    assert client.get.await_args.kwargs["params"]["baseObjectInstance"] == resolved_node
+
+
+def test_site_alarms_returns_not_found_suggestions_without_calling_huawei():
+    client = FakeHuaweiClient({"alarmInformationList": []})
+    suggestions = [
+        {
+            "nemonica": "AN0069",
+            "nodo": "MBTS-AN0069",
+            "nodeb": "UAN0069",
+            "similarity": 0.8,
+        }
+    ]
+    resolution = {
+        "input": "an0069",
+        "resolved": None,
+        "resolved_site": None,
+        "status": "not_found",
+        "suggestions": suggestions,
+    }
+
+    response, _ = _call_site_alarms_with_resolution(client, resolution)
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "not_found"
+    assert response.json()["user_input"] == "an0069"
+    assert response.json()["suggestions"] == suggestions
+    client.get.assert_not_awaited()
+
+
+def test_site_alarms_returns_missing_mapping_metadata_without_calling_huawei():
+    client = FakeHuaweiClient({"alarmInformationList": []})
+    resolution = {
+        "input": "an0069",
+        "resolved": None,
+        "resolved_site": "AN0069",
+        "status": "missing_mapping",
+        "available_technologies": ["4G", "5G"],
+    }
+
+    response, _ = _call_site_alarms_with_resolution(
+        client, resolution, {"technology": "3G"}
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "missing_mapping"
+    assert response.json()["resolved_site"] == "AN0069"
+    assert response.json()["technology"] == "3G"
+    assert response.json()["available_technologies"] == ["4G", "5G"]
+    client.get.assert_not_awaited()
+
+
+def test_site_alarms_returns_503_without_calling_huawei_when_directory_is_unavailable():
+    client = FakeHuaweiClient({"alarmInformationList": []})
+
+    response, _ = _call_site_alarms_with_resolution(
+        client,
+        None,
+        resolver_error=HTTPException(status_code=503, detail="directory unavailable"),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "service_unavailable"
+    assert response.json()["details"] == "site_directory_unreachable"
+    client.get.assert_not_awaited()
+
+
+def test_site_alarms_rejects_unsupported_technology_before_resolution():
+    client = FakeHuaweiClient({"alarmInformationList": []})
+    resolution = {"input": "an0069", "resolved": "MBTS-AN0069", "status": "resolved"}
+
+    response, resolver = _call_site_alarms_with_resolution(
+        client, resolution, {"technology": "2G"}
+    )
+
+    assert response.status_code == 422
+    resolver.assert_not_awaited()
+    client.get.assert_not_awaited()
 
 
 def test_hermes_alarms_maps_fields_and_renames_columns():

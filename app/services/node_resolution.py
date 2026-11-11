@@ -69,7 +69,7 @@ def _build_suggestion_index(sites: Sequence[str]) -> dict:
     }
 
 
-def _rank_suggestions(name: str, suggestion_index: dict) -> list[str]:
+def _rank_suggestions(name: str, suggestion_index: dict) -> list[tuple[str, float]]:
     candidates = suggestion_index["candidates"]
     if not candidates:
         return []
@@ -110,10 +110,15 @@ def _rank_suggestions(name: str, suggestion_index: dict) -> list[str]:
         best.append((score, _normalize(candidates[index]), candidates[index]))
         best.sort(key=lambda item: (-item[0], item[1], item[2]))
         del best[5:]
-    return [site for _, _, site in best]
+    return [(site, score) for score, _, site in best if score >= 0.6]
 
 
-async def resolve_names(names: Sequence[str], target_column: str) -> list[dict]:
+async def resolve_names(
+    names: Sequence[str],
+    target_column: str,
+    *,
+    detailed_suggestions: bool = False,
+) -> list[dict]:
     if target_column not in _TARGET_COLUMNS:
         raise ValueError(f"Unsupported site-directory target column: {target_column}")
     if _engine is None:
@@ -129,7 +134,7 @@ async def resolve_names(names: Sequence[str], target_column: str) -> list[dict]:
         f"OR lower(btrim({target_column})) IN :names"
     ).bindparams(bindparam("names", expanding=True))
     suggestions_query = text(
-        "SELECT sitio FROM public.cellreference WHERE sitio IS NOT NULL"
+        "SELECT sitio, nodo, nodeb FROM public.cellreference WHERE sitio IS NOT NULL"
     )
 
     try:
@@ -162,31 +167,45 @@ async def resolve_names(names: Sequence[str], target_column: str) -> list[dict]:
             detail="El directorio de sitios no está configurado o disponible.",
         ) from error
 
-    unique_sites: dict[str, str] = {}
+    unique_sites: dict[str, dict] = {}
     for row in site_rows:
         normalized_site = _normalize(row["sitio"])
         if normalized_site:
-            unique_sites.setdefault(normalized_site, row["sitio"])
-    sites = list(unique_sites.values())
+            unique_sites.setdefault(normalized_site, dict(row))
+    sites = [row["sitio"] for row in unique_sites.values()]
     suggestion_index = _build_suggestion_index(sites) if misses else None
     resolutions = []
     for name in names:
         normalized_name = _normalize(name)
         site_matches = sites_by_name.get(normalized_name, [])
         if not site_matches and normalized_name not in targets_by_name:
-            suggestions = _rank_suggestions(name, suggestion_index)
+            ranked_suggestions = _rank_suggestions(name, suggestion_index)
+            suggestions = [
+                {
+                    "nemonica": unique_sites[_normalize(site)]["sitio"],
+                    "nodo": unique_sites[_normalize(site)]["nodo"],
+                    "nodeb": unique_sites[_normalize(site)]["nodeb"],
+                    "similarity": score,
+                }
+                for site, score in ranked_suggestions
+            ]
             resolutions.append(
                 {
                     "input": name,
                     "resolved": None,
                     "status": "not_found",
                     "error": "No se encontró el sitio.",
-                    "suggestions": suggestions,
+                    "suggestions": (
+                        suggestions
+                        if detailed_suggestions
+                        else [suggestion["nemonica"] for suggestion in suggestions]
+                    ),
                 }
             )
             continue
 
         if site_matches:
+            resolved_site = min(str(row["sitio"]) for row in site_matches)
             target_values: dict[str, set[str]] = {}
             for row in site_matches:
                 value = row[target_column]
@@ -197,22 +216,33 @@ async def resolve_names(names: Sequence[str], target_column: str) -> list[dict]:
                     {
                         "input": name,
                         "resolved": None,
+                        "resolved_site": resolved_site,
                         "status": "ambiguous_mapping",
                         "error": f"El sitio tiene múltiples mapeos para {target_column}.",
+                        "suggestions": [],
                     }
                 )
                 continue
             canonical_target = min(next(iter(target_values.values()))) if target_values else None
         else:
-            canonical_target = targets_by_name[normalized_name][target_column]
+            resolved_row = targets_by_name[normalized_name]
+            resolved_site = str(resolved_row["sitio"])
+            canonical_target = resolved_row[target_column]
 
         if not canonical_target or not str(canonical_target).strip():
             resolutions.append(
                 {
                     "input": name,
                     "resolved": None,
+                    "resolved_site": resolved_site,
                     "status": "missing_mapping",
                     "error": f"El sitio no tiene mapeo para {target_column}.",
+                    "suggestions": [],
+                    "available_technologies": [
+                        technology
+                        for technology, column in (("3G", "nodeb"), ("4G", "nodo"), ("5G", "nodo"))
+                        if any(row[column] and str(row[column]).strip() for row in site_matches)
+                    ],
                 }
             )
         else:
@@ -220,7 +250,19 @@ async def resolve_names(names: Sequence[str], target_column: str) -> list[dict]:
                 {
                     "input": name,
                     "resolved": canonical_target,
+                    "resolved_site": resolved_site,
                     "status": "resolved",
                 }
             )
     return resolutions
+
+
+async def resolve_alarm_name(site_name: str, technology: str) -> dict:
+    target_column = "nodeb" if technology == "3G" else "nodo"
+    return (
+        await resolve_names(
+            [site_name],
+            target_column,
+            detailed_suggestions=True,
+        )
+    )[0]

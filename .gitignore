@@ -25,3 +25,9 @@ uvicorn.log
 # Archivos temporales de análisis o logs de convergencia interna
 .specify/**/*.tmp
 .specify/**/*.log
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/
